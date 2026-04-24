@@ -1,4 +1,3 @@
-
 import os
 import re
 import unicodedata
@@ -10,8 +9,8 @@ import bcrypt
 import pandas as pd
 import requests
 import streamlit as st
+import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
@@ -40,19 +39,17 @@ def get_database_url():
         return env_url
     raise RuntimeError("DATABASE_URL não configurada. Defina em secrets ou variável de ambiente.")
 
-@st.cache_resource(show_spinner=False)
-def get_pool():
-    return ConnectionPool(
-        conninfo=get_database_url(),
-        min_size=1,
-        max_size=5,
-        kwargs={"row_factory": dict_row},
-        open=True,
+def get_conn():
+    url = get_database_url()
+    return psycopg.connect(
+        url,
+        row_factory=dict_row,
+        connect_timeout=15
     )
 
 def run_query(query, params=None, fetch="all"):
     params = params or ()
-    with get_pool().connection() as conn:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(query, params)
             if fetch == "none":
@@ -63,17 +60,24 @@ def run_query(query, params=None, fetch="all"):
 
 def execute_query(query, params=None):
     params = params or ()
-    with get_pool().connection() as conn:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(query, params)
         conn.commit()
 
 def run_many(statements):
-    with get_pool().connection() as conn:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             for sql, params in statements:
                 cur.execute(sql, params)
         conn.commit()
+
+def testar_conexao_banco():
+    try:
+        row = run_query("SELECT 1 AS ok", fetch="one")
+        return True, row
+    except Exception as e:
+        return False, str(e)
 
 def brl(valor):
     try:
@@ -238,7 +242,7 @@ def init_db():
             observacao_aprovacao TEXT
         )"""
     ]
-    with get_pool().connection() as conn:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             for sql in ddl:
                 cur.execute(sql)
@@ -433,42 +437,43 @@ def carregar_padroes():
     """))
 
 def build_dropdown_options(contratos_df, itens_df):
-    options = [{"tipo": "Todos", "label": "Todos os registros", "valor": ""}]
-    if not contratos_df.empty:
-        for _, row in contratos_df.drop_duplicates(subset=["cod_unico"]).sort_values(["numero_sei", "titulo"]).iterrows():
-            options.append({"tipo": "Contrato", "label": f"Contrato | SEI {row['numero_sei']} | {row['titulo']}", "valor": str(row["cod_unico"])})
-    if not itens_df.empty:
-        for _, row in itens_df.drop_duplicates(subset=["id"]).sort_values(["nome_item", "numero_sei"]).iterrows():
-            options.append({"tipo": "Item", "label": f"Item | {row['nome_item']} | SEI {row['numero_sei']}", "valor": str(row["id"])})
-        for _, row in itens_df[["nome_padrao_descritivo"]].dropna().drop_duplicates().sort_values("nome_padrao_descritivo").iterrows():
-            options.append({"tipo": "Padrão Descritivo", "label": f"Padrão Descritivo | {row['nome_padrao_descritivo']}", "valor": str(row["nome_padrao_descritivo"])})
-        for _, row in itens_df[["nome_categoria"]].dropna().drop_duplicates().sort_values("nome_categoria").iterrows():
-            options.append({"tipo": "Categoria", "label": f"Categoria | {row['nome_categoria']}", "valor": str(row["nome_categoria"])})
+    options = [{"tipo": "Todos", "label": "Todos os Padrões Descritivos", "valor": ""}]
+    if not itens_df.empty and "nome_padrao_descritivo" in itens_df.columns:
+        padroes = (
+            itens_df[["nome_padrao_descritivo"]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values("nome_padrao_descritivo")
+        )
+        for _, row in padroes.iterrows():
+            nome = str(row["nome_padrao_descritivo"] or "").strip()
+            if nome:
+                options.append({
+                    "tipo": "Padrão Descritivo",
+                    "label": nome,
+                    "valor": nome
+                })
     return options
 
 def aplicar_filtro_lista(contratos_df, itens_df, selecao):
-    if not selecao or selecao.get("tipo") == "Todos":
+    if not selecao or selecao.get("tipo") == "Todos" or not selecao.get("valor"):
         return contratos_df, itens_df
-    tipo = selecao.get("tipo")
-    valor = selecao.get("valor")
-    contratos_filtrados = contratos_df.copy()
-    itens_filtrados = itens_df.copy()
-    if tipo == "Contrato":
-        contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].astype(str) == str(valor)]
-        itens_filtrados = itens_filtrados[itens_filtrados["contrato_cod_unico"].astype(str) == str(valor)]
-    elif tipo == "Item":
-        itens_filtrados = itens_filtrados[itens_filtrados["id"].astype(str) == str(valor)]
-        cods = itens_filtrados["contrato_cod_unico"].dropna().astype(str).unique().tolist()
-        contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].astype(str).isin(cods)]
-    elif tipo == "Padrão Descritivo":
-        itens_filtrados = itens_filtrados[itens_filtrados["nome_padrao_descritivo"].fillna("").astype(str) == str(valor)]
-        cods = itens_filtrados["contrato_cod_unico"].dropna().astype(str).unique().tolist()
-        contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].astype(str).isin(cods)]
-    elif tipo == "Categoria":
-        itens_filtrados = itens_filtrados[itens_filtrados["nome_categoria"].fillna("").astype(str) == str(valor)]
-        cods = itens_filtrados["contrato_cod_unico"].dropna().astype(str).unique().tolist()
-        contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].astype(str).isin(cods)]
+
+    valor = str(selecao.get("valor") or "").strip()
+
+    itens_filtrados = itens_df[
+        itens_df["nome_padrao_descritivo"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .eq(valor)
+    ].copy()
+
+    cods = itens_filtrados["contrato_cod_unico"].dropna().astype(str).unique().tolist()
+    contratos_filtrados = contratos_df[contratos_df["cod_unico"].astype(str).isin(cods)].copy()
+
     return contratos_filtrados, itens_filtrados
+
 
 def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei="Todos", filtro_status="Todos", padrao_texto=""):
     contratos_filtrados = contratos_df.copy()
@@ -480,7 +485,14 @@ def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei=
         contratos_filtrados = contratos_filtrados[contratos_filtrados["status"] == filtro_status]
         itens_filtrados = itens_filtrados[itens_filtrados["status"] == filtro_status]
     if padrao_texto:
-        itens_filtrados = itens_filtrados[itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_texto, x))]
+        itens_filtrados = itens_filtrados[
+            itens_filtrados["nome_padrao_descritivo"]
+            .fillna("")
+            .astype(str)
+            .apply(lambda x: match_inteligente(padrao_texto, x) or normalizar_texto(padrao_texto) in normalizar_texto(x))
+        ]
+        cods_padrao = itens_filtrados["contrato_cod_unico"].dropna().astype(str).unique().tolist()
+        contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].astype(str).isin(cods_padrao)]
     if busca_geral:
         mask_contrato = contratos_filtrados.apply(lambda row: (
             match_inteligente(busca_geral, row["titulo"]) or
@@ -585,8 +597,16 @@ def login_sidebar():
                 st.rerun()
 
 # startup
-init_db()
 apply_custom_css()
+
+ok_db, db_info = testar_conexao_banco()
+if not ok_db:
+    st.error("Não foi possível conectar ao banco PostgreSQL.")
+    st.code(str(db_info))
+    st.info("Verifique se DATABASE_URL está em Settings > Secrets, se a URL é do Neon/Supabase e se contém sslmode=require.")
+    st.stop()
+
+init_db()
 login_sidebar()
 render_header()
 
@@ -626,7 +646,7 @@ if menu == "Dashboard":
 
 if menu == "Contratos":
     st.title("Consulta de Contratos e Itens")
-    st.caption("Consulte contratos e itens vinculados com busca por texto ou por lista suspensa.")
+    st.caption("Consulte contratos e itens vinculados com busca por texto ou por lista suspensa de Padrão Descritivo.")
     contratos_df = carregar_contratos()
     itens_df = carregar_itens()
     if contratos_df.empty:
@@ -645,7 +665,7 @@ if menu == "Contratos":
     else:
         c1, c2, c3 = st.columns([2.4, 1.2, 1])
         labels = [opt["label"] for opt in opcoes_lista]
-        label_escolhida = c1.selectbox("Selecione o registro para localizar", labels)
+        label_escolhida = c1.selectbox("Selecione o Padrão Descritivo", labels)
         busca_lista = next((opt for opt in opcoes_lista if opt["label"] == label_escolhida), None)
         numero_sei = c2.selectbox("Número SEI", ["Todos"] + sorted(contratos_df["numero_sei"].astype(str).unique().tolist()))
         filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "VENCIDA"])
@@ -714,11 +734,19 @@ if menu == "Requisições":
         texto = a2.text_input("Item, detalhe ou categoria")
         selecao_item_lista = None
     else:
-        itens_opcoes = [{"label": "Todos os itens", "valor": ""}]
-        for _, row in itens_df.drop_duplicates(subset=["id"]).sort_values(["nome_item", "numero_sei"]).iterrows():
-            itens_opcoes.append({"label": f"{row['nome_item']} | SEI {row['numero_sei']} | Saldo {row['saldo_quantidade']}", "valor": str(row["id"])})
-        label_item = st.selectbox("Selecione o item", [x["label"] for x in itens_opcoes])
-        selecao_item_lista = next((x for x in itens_opcoes if x["label"] == label_item), None)
+        padrao_opcoes = [{"label": "Todos os Padrões Descritivos", "valor": ""}]
+        padroes_req = (
+            itens_df[["nome_padrao_descritivo"]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values("nome_padrao_descritivo")
+        )
+        for _, row in padroes_req.iterrows():
+            nome = str(row["nome_padrao_descritivo"] or "").strip()
+            if nome:
+                padrao_opcoes.append({"label": nome, "valor": nome})
+        label_padrao = st.selectbox("Selecione o Padrão Descritivo", [x["label"] for x in padrao_opcoes])
+        selecao_item_lista = next((x for x in padrao_opcoes if x["label"] == label_padrao), None)
         padrao_filtro = ""
         texto = ""
     st.markdown('</div>', unsafe_allow_html=True)
@@ -728,7 +756,12 @@ if menu == "Requisições":
     if status_contrato != "Todos":
         itens_filtrados = itens_filtrados[itens_filtrados["status"] == status_contrato]
     if padrao_filtro:
-        itens_filtrados = itens_filtrados[itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_filtro, x))]
+        itens_filtrados = itens_filtrados[
+            itens_filtrados["nome_padrao_descritivo"]
+            .fillna("")
+            .astype(str)
+            .apply(lambda x: match_inteligente(padrao_filtro, x) or normalizar_texto(padrao_filtro) in normalizar_texto(x))
+        ]
     if texto:
         itens_filtrados = itens_filtrados[itens_filtrados.apply(lambda row: (
             match_inteligente(texto, row["nome_item"]) or
@@ -738,7 +771,13 @@ if menu == "Requisições":
             match_inteligente(texto, row["nome_categoria"])
         ), axis=1)]
     if modo_localizacao == "Busca por lista suspensa" and selecao_item_lista and selecao_item_lista["valor"]:
-        itens_filtrados = itens_filtrados[itens_filtrados["id"].astype(str) == str(selecao_item_lista["valor"])]
+        itens_filtrados = itens_filtrados[
+            itens_filtrados["nome_padrao_descritivo"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .eq(str(selecao_item_lista["valor"]).strip())
+        ]
     if somente_disponiveis:
         itens_filtrados = itens_filtrados[itens_filtrados["saldo_quantidade"] > 0]
     if itens_filtrados.empty:
@@ -845,6 +884,20 @@ if menu == "Cadastro de Contratos":
                 execute_query("INSERT INTO contratos(cod_unico, numero_sei, inicio_vigencia, fim_vigencia, titulo, status) VALUES (%s, %s, %s, %s, %s, %s)", (cod_unico.strip(), numero_sei.strip(), inicio_vigencia, fim_vigencia, titulo.strip(), status))
                 st.success("Contrato cadastrado com sucesso.")
 
+
+    st.divider()
+    st.subheader("Contratos cadastrados")
+    contratos_lista = carregar_contratos()
+    if contratos_lista.empty:
+        st.info("Nenhum contrato cadastrado.")
+    else:
+        exibir = contratos_lista.copy()
+        exibir["inicio_vigencia"] = exibir["inicio_vigencia"].apply(data_br)
+        exibir["fim_vigencia"] = exibir["fim_vigencia"].apply(data_br)
+        exibir = exibir[["cod_unico", "numero_sei", "inicio_vigencia", "fim_vigencia", "titulo", "status"]]
+        exibir.columns = ["COD Único", "Número SEI", "Início", "Fim", "Título", "Status"]
+        st.dataframe(exibir, use_container_width=True, hide_index=True)
+
 if menu == "Cadastro de Itens":
     if not pode_cadastrar_item():
         st.error("Somente usuários nível 2 ou nível 0 podem cadastrar itens.")
@@ -872,6 +925,355 @@ if menu == "Cadastro de Itens":
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (contrato_cod, codigo_item, detalhes.strip(), quantidade, valor_unitario, valor_total, quantidade, valor_total))
             st.success("Item cadastrado com sucesso.")
+
+
+    st.divider()
+    st.subheader("Itens cadastrados")
+    itens_lista = carregar_itens()
+    if itens_lista.empty:
+        st.info("Nenhum item cadastrado.")
+    else:
+        cols_exibir = [
+            "numero_sei", "nome_item", "nome_padrao_descritivo", "nome_categoria",
+            "detalhes_item", "quantidade", "saldo_quantidade", "saldo_valor", "status"
+        ]
+        exibir = itens_lista[[c for c in cols_exibir if c in itens_lista.columns]].copy()
+        rename_map = {
+            "numero_sei": "Número SEI",
+            "nome_item": "Item",
+            "nome_padrao_descritivo": "Padrão Descritivo",
+            "nome_categoria": "Categoria",
+            "detalhes_item": "Detalhes",
+            "quantidade": "Quantidade Inicial",
+            "saldo_quantidade": "Saldo Atual",
+            "saldo_valor": "Saldo Financeiro",
+            "status": "Status"
+        }
+        exibir = exibir.rename(columns=rename_map)
+        if "Saldo Financeiro" in exibir.columns:
+            exibir["Saldo Financeiro"] = exibir["Saldo Financeiro"].apply(brl)
+        st.dataframe(exibir, use_container_width=True, hide_index=True)
+
+
+if menu == "Editar Contratos":
+    if not pode_editar_dados():
+        st.error("Somente usuários nível 0 e 1 podem editar contratos.")
+        st.stop()
+
+    st.title("Editar Contratos")
+    contratos = carregar_contratos()
+
+    if contratos.empty:
+        st.info("Nenhum contrato cadastrado para edição.")
+        st.stop()
+
+    contrato_sel = st.selectbox(
+        "Selecione o contrato",
+        contratos.to_dict("records"),
+        format_func=lambda x: f"{x['numero_sei']} - {x['titulo']} - {x['status']}"
+    )
+
+    with st.form("form_editar_contrato"):
+        cod_unico = st.text_input("COD Único", value=contrato_sel["cod_unico"])
+        numero_sei = st.text_input("Número do SEI", value=contrato_sel["numero_sei"])
+        titulo = st.text_input("Título", value=contrato_sel["titulo"])
+        c1, c2 = st.columns(2)
+        inicio_txt = c1.text_input("Início da Vigência (DD-MM-YYYY)", value=data_br(contrato_sel["inicio_vigencia"]))
+        fim_txt = c2.text_input("Fim da Vigência (DD-MM-YYYY)", value=data_br(contrato_sel["fim_vigencia"]))
+        salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
+
+        if salvar:
+            inicio = parse_data_br(inicio_txt)
+            fim = parse_data_br(fim_txt)
+
+            if not all([cod_unico.strip(), numero_sei.strip(), titulo.strip(), inicio, fim]):
+                st.warning("Preencha todos os campos corretamente.")
+            elif fim < inicio:
+                st.error("A data final não pode ser menor que a data inicial.")
+            else:
+                status = normalizar_status(inicio, fim)
+                cod_antigo = contrato_sel["cod_unico"]
+
+                try:
+                    if cod_antigo != cod_unico.strip():
+                        run_many([
+                            ("""
+                                UPDATE contratos
+                                SET cod_unico=%s, numero_sei=%s, inicio_vigencia=%s, fim_vigencia=%s, titulo=%s, status=%s
+                                WHERE id=%s
+                            """, (cod_unico.strip(), numero_sei.strip(), inicio, fim, titulo.strip(), status, int(contrato_sel["id"]))),
+                            ("UPDATE itens SET contrato_cod_unico=%s WHERE contrato_cod_unico=%s", (cod_unico.strip(), cod_antigo)),
+                            ("UPDATE requisicoes SET contrato_cod_unico=%s WHERE contrato_cod_unico=%s", (cod_unico.strip(), cod_antigo)),
+                        ])
+                    else:
+                        execute_query("""
+                            UPDATE contratos
+                            SET cod_unico=%s, numero_sei=%s, inicio_vigencia=%s, fim_vigencia=%s, titulo=%s, status=%s
+                            WHERE id=%s
+                        """, (cod_unico.strip(), numero_sei.strip(), inicio, fim, titulo.strip(), status, int(contrato_sel["id"])))
+
+                    st.success("Contrato atualizado com sucesso.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar contrato: {e}")
+
+    st.warning("A exclusão removerá o contrato e seus itens/requisições vinculados.")
+    if st.button("Excluir contrato selecionado", type="primary", use_container_width=True):
+        excluir_contrato(contrato_sel["cod_unico"])
+        st.success("Contrato excluído com sucesso.")
+        st.rerun()
+
+    st.divider()
+    st.subheader("Base de contratos")
+    exibir = contratos.copy()
+    exibir["inicio_vigencia"] = exibir["inicio_vigencia"].apply(data_br)
+    exibir["fim_vigencia"] = exibir["fim_vigencia"].apply(data_br)
+    st.dataframe(exibir, use_container_width=True, hide_index=True)
+
+
+if menu == "Editar Itens":
+    if not pode_editar_dados():
+        st.error("Somente usuários nível 0 e 1 podem editar itens.")
+        st.stop()
+
+    st.title("Editar Itens")
+    itens = carregar_itens()
+    contratos = carregar_contratos()
+    catalogo = carregar_catalogo()
+
+    if itens.empty:
+        st.info("Nenhum item cadastrado para edição.")
+        st.stop()
+    if contratos.empty or catalogo.empty:
+        st.warning("É necessário haver contratos e catálogo cadastrados.")
+        st.stop()
+
+    item_sel = st.selectbox(
+        "Selecione o item",
+        itens.to_dict("records"),
+        format_func=lambda x: f"SEI {x['numero_sei']} | {x['nome_item']} | {str(x['detalhes_item'])[:60]}"
+    )
+
+    opcoes_contratos = contratos["cod_unico"].astype(str).tolist()
+    opcoes_catalogo = {f"{row['codigo_item']} - {row['nome_item']}": row["codigo_item"] for _, row in catalogo.iterrows()}
+    labels_catalogo = list(opcoes_catalogo.keys())
+    label_atual = next((k for k, v in opcoes_catalogo.items() if str(v) == str(item_sel["codigo_item"])), labels_catalogo[0])
+
+    with st.form("form_editar_item"):
+        contrato_cod = st.selectbox(
+            "Contrato",
+            opcoes_contratos,
+            index=opcoes_contratos.index(str(item_sel["contrato_cod_unico"])) if str(item_sel["contrato_cod_unico"]) in opcoes_contratos else 0
+        )
+        item_catalogo = st.selectbox(
+            "Item do Catálogo",
+            labels_catalogo,
+            index=labels_catalogo.index(label_atual) if label_atual in labels_catalogo else 0
+        )
+        detalhes = st.text_area("Detalhes do Item", value=str(item_sel["detalhes_item"] or ""))
+        c1, c2 = st.columns(2)
+        quantidade = c1.number_input("Quantidade Inicial", min_value=0.0, value=float(item_sel["quantidade"] or 0), step=1.0)
+        valor_unitario = c2.number_input("Valor Unitário", min_value=0.0, value=float(item_sel["valor_unitario"] or 0), step=0.01)
+        salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
+
+        if salvar:
+            codigo_item = opcoes_catalogo[item_catalogo]
+            aprovado = run_query("""
+                SELECT COALESCE(SUM(quantidade_solicitada), 0) AS total_aprovado
+                FROM requisicoes
+                WHERE item_id = %s AND status = 'APROVADA'
+            """, (int(item_sel["id"]),), fetch="one")
+            aprovado = float((aprovado or {}).get("total_aprovado", 0) or 0)
+
+            if quantidade < aprovado:
+                st.error(f"A quantidade inicial não pode ser menor que o total já aprovado ({aprovado}).")
+            else:
+                saldo_quantidade = quantidade - aprovado
+                valor_total = quantidade * valor_unitario
+                saldo_valor = saldo_quantidade * valor_unitario
+
+                run_many([
+                    ("""
+                        UPDATE itens
+                        SET contrato_cod_unico=%s, codigo_item=%s, detalhes_item=%s,
+                            quantidade=%s, valor_unitario=%s, valor_total=%s,
+                            saldo_quantidade=%s, saldo_valor=%s
+                        WHERE id=%s
+                    """, (
+                        contrato_cod, codigo_item, detalhes.strip(),
+                        quantidade, valor_unitario, valor_total,
+                        saldo_quantidade, saldo_valor, int(item_sel["id"])
+                    )),
+                    ("UPDATE requisicoes SET contrato_cod_unico=%s, codigo_item=%s WHERE item_id=%s",
+                     (contrato_cod, codigo_item, int(item_sel["id"])))
+                ])
+                st.success("Item atualizado com sucesso.")
+                st.rerun()
+
+    st.warning("A exclusão removerá o item e suas requisições vinculadas.")
+    if st.button("Excluir item selecionado", type="primary", use_container_width=True):
+        excluir_item(item_sel["id"])
+        st.success("Item excluído com sucesso.")
+        st.rerun()
+
+    st.divider()
+    st.subheader("Base de itens")
+    st.dataframe(itens, use_container_width=True, hide_index=True)
+
+
+if menu == "Editar Catálogo":
+    if not pode_editar_dados():
+        st.error("Somente usuários nível 0 e 1 podem editar catálogo.")
+        st.stop()
+
+    st.title("Editar Catálogo")
+    catalogo = carregar_catalogo()
+    padroes = carregar_padroes()
+
+    if catalogo.empty:
+        st.info("Nenhum item do catálogo cadastrado. Cadastre primeiro em Codificação > Catálogo.")
+        st.stop()
+    if padroes.empty:
+        st.info("Nenhum padrão descritivo cadastrado.")
+        st.stop()
+
+    item_sel = st.selectbox(
+        "Selecione o item do catálogo",
+        catalogo.to_dict("records"),
+        format_func=lambda x: f"{x['codigo_item']} - {x['nome_item']} | {x['nome_padrao_descritivo']}"
+    )
+
+    mapa_padroes = {f"{row['codigo_padrao_descritivo']} - {row['nome_padrao_descritivo']}": row["id"] for _, row in padroes.iterrows()}
+    labels_padroes = list(mapa_padroes.keys())
+    label_padrao_atual = next((k for k, v in mapa_padroes.items() if int(v) == int(item_sel["padrao_descritivo_id"])), labels_padroes[0])
+
+    with st.form("form_editar_catalogo"):
+        codigo_item = st.text_input("Código do Item", value=str(item_sel["codigo_item"]))
+        nome_item = st.text_input("Nome do Item", value=str(item_sel["nome_item"]))
+        padrao_sel = st.selectbox(
+            "Padrão Descritivo",
+            labels_padroes,
+            index=labels_padroes.index(label_padrao_atual) if label_padrao_atual in labels_padroes else 0
+        )
+        salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
+
+        if salvar:
+            codigo_antigo = item_sel["codigo_item"]
+            novo_padrao_id = mapa_padroes[padrao_sel]
+
+            try:
+                ops = [("""
+                    UPDATE catalogo
+                    SET codigo_item=%s, nome_item=%s, padrao_descritivo_id=%s
+                    WHERE id=%s
+                """, (codigo_item.strip(), nome_item.strip(), int(novo_padrao_id), int(item_sel["id"])))]
+
+                if str(codigo_antigo) != codigo_item.strip():
+                    ops.extend([
+                        ("UPDATE itens SET codigo_item=%s WHERE codigo_item=%s", (codigo_item.strip(), codigo_antigo)),
+                        ("UPDATE requisicoes SET codigo_item=%s WHERE codigo_item=%s", (codigo_item.strip(), codigo_antigo)),
+                    ])
+
+                run_many(ops)
+                st.success("Catálogo atualizado com sucesso.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao atualizar catálogo: {e}")
+
+    st.warning("A exclusão pode falhar caso o item esteja vinculado a itens/requisições.")
+    if st.button("Excluir item do catálogo selecionado", type="primary", use_container_width=True):
+        try:
+            excluir_catalogo(item_sel["codigo_item"])
+            st.success("Item do catálogo excluído com sucesso.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Não foi possível excluir. Verifique vínculos existentes. Detalhe: {e}")
+
+    st.divider()
+    st.subheader("Itens do catálogo")
+    st.dataframe(catalogo, use_container_width=True, hide_index=True)
+
+
+if menu == "Editar Requisições":
+    if not is_admin():
+        st.error("Somente usuários nível 0 podem editar e excluir requisições.")
+        st.stop()
+
+    st.title("Editar Requisições")
+    req = carregar_requisicoes()
+
+    if req.empty:
+        st.info("Nenhuma requisição registrada.")
+        st.stop()
+
+    req_sel = st.selectbox(
+        "Selecione a requisição",
+        req.to_dict("records"),
+        format_func=lambda x: f"ID {x['id']} | {x['numero_sei']} | {x['nome_item']} | {x['status']}"
+    )
+
+    item_row = run_query("""
+        SELECT id, saldo_quantidade, valor_unitario
+        FROM itens
+        WHERE id = %s
+    """, (int(req_sel["item_id"]),), fetch="one")
+
+    valor_unit_item = float(item_row["valor_unitario"] or 0) if item_row else 0.0
+    qtd_atual = float(req_sel["quantidade_solicitada"] or 0)
+
+    with st.form("form_editar_requisicao"):
+        nova_quantidade = st.number_input("Quantidade solicitada", min_value=0.0, value=qtd_atual, step=1.0)
+        nova_justificativa = st.text_area("Justificativa", value=str(req_sel["justificativa"] or ""))
+        opcoes_status = ["PENDENTE", "APROVADA", "REJEITADA"]
+        status_atual = str(req_sel["status"] or "PENDENTE").upper()
+        novo_status = st.selectbox("Status", opcoes_status, index=opcoes_status.index(status_atual) if status_atual in opcoes_status else 0)
+        nova_observacao = st.text_area("Observação da análise", value=str(req_sel["observacao_aprovacao"] or ""))
+        salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
+
+        if salvar:
+            if nova_quantidade <= 0:
+                st.warning("Informe uma quantidade maior que zero.")
+            elif not nova_justificativa.strip():
+                st.warning("Informe a justificativa.")
+            else:
+                valor_estimado = float(nova_quantidade) * valor_unit_item
+                if novo_status in ["APROVADA", "REJEITADA"]:
+                    execute_query("""
+                        UPDATE requisicoes
+                        SET quantidade_solicitada=%s, valor_estimado=%s, justificativa=%s,
+                            status=%s, usuario_aprovador=%s, data_aprovacao=CURRENT_TIMESTAMP,
+                            observacao_aprovacao=%s
+                        WHERE id=%s
+                    """, (
+                        float(nova_quantidade), valor_estimado, nova_justificativa.strip(),
+                        novo_status, st.session_state.usuario, nova_observacao.strip(), int(req_sel["id"])
+                    ))
+                else:
+                    execute_query("""
+                        UPDATE requisicoes
+                        SET quantidade_solicitada=%s, valor_estimado=%s, justificativa=%s,
+                            status=%s, usuario_aprovador=NULL, data_aprovacao=NULL,
+                            observacao_aprovacao=%s
+                        WHERE id=%s
+                    """, (
+                        float(nova_quantidade), valor_estimado, nova_justificativa.strip(),
+                        novo_status, nova_observacao.strip(), int(req_sel["id"])
+                    ))
+
+                recalc_item_balance(int(req_sel["item_id"]))
+                st.success("Requisição atualizada com sucesso.")
+                st.rerun()
+
+    if st.button("Excluir requisição selecionada", type="primary", use_container_width=True):
+        execute_query("DELETE FROM requisicoes WHERE id = %s", (int(req_sel["id"]),))
+        recalc_item_balance(int(req_sel["item_id"]))
+        st.success("Requisição excluída com sucesso.")
+        st.rerun()
+
+    st.divider()
+    st.subheader("Base de requisições")
+    st.dataframe(req, use_container_width=True, hide_index=True)
+
 
 if menu == "Codificação":
     if not pode_cadastrar_codificacao():
