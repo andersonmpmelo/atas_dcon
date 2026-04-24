@@ -1,0 +1,7 @@
+streamlit
+pandas
+bcrypt
+requests
+reportlab
+psycopg[binary]
+psycopg_pool
