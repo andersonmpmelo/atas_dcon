@@ -1,8 +1,0 @@
-streamlit
-pandas
-bcrypt
-requests
-reportlab
-svglib
-psycopg[binary]
-psycopg_pool
