@@ -8,6 +8,7 @@ import unicodedata
 import re
 from difflib import SequenceMatcher
 import base64
+import uuid
 from pathlib import Path
 
 from reportlab.lib.pagesizes import A4
@@ -18,7 +19,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
 DB_PATH = "arp.db"
 APP_TITLE = "Sistema de Gestão de ARPs, Requisições e Catálogo"
-LOGO_PATH = "https://centraldecompras.sead.pi.gov.br/wp-content/uploads/2023/10/logo-centra-de-compras.svg"
+LOGO_PATH = "/mnt/data/logo-centra-de-compras.svg"
 
 COR_AZUL = "#164194"
 COR_AMARELO = "#F7B600"
@@ -69,10 +70,36 @@ def datahora_br(data):
 
 
 def parse_data_br(texto):
-    try:
-        return datetime.strptime(str(texto).strip(), "%d-%m-%Y").date()
-    except Exception:
+    """
+    Aceita:
+    - DDMMAAAA, exemplo: 31122026
+    - DD-MM-AAAA, exemplo: 31-12-2026
+    - DD/MM/AAAA, exemplo: 31/12/2026
+    """
+    txt = str(texto or "").strip()
+    if not txt:
         return None
+
+    formatos = ["%d%m%Y", "%d-%m-%Y", "%d/%m/%Y"]
+
+    for fmt in formatos:
+        try:
+            return datetime.strptime(txt, fmt).date()
+        except Exception:
+            pass
+
+    return None
+
+
+def gerar_cod_unico():
+    return f"ARP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
+
+
+def validar_codigo_sei(codigo):
+    """
+    Modelo exigido: 00000.000000-00/AAAA
+    """
+    return re.fullmatch(r"\d{5}\.\d{6}-\d{2}/\d{4}", str(codigo or "").strip()) is not None
 
 
 def normalizar_status(inicio, fim):
@@ -1483,19 +1510,22 @@ if menu == "Cadastro de ARPs":
     st.title("Cadastro de ARPs")
     section_box_start()
     with st.form("form_contrato", clear_on_submit=True):
-        cod_unico = st.text_input("COD Único")
-        numero_sei = st.text_input("Número do SEI")
+        cod_unico = gerar_cod_unico()
+        st.text_input("COD Único gerado automaticamente", value=cod_unico, disabled=True)
+        numero_sei = st.text_input("Número do SEI", placeholder="00000.000000-00/2026")
         titulo = st.text_input("Título")
         c1, c2 = st.columns(2)
-        inicio_vigencia_txt = c1.text_input("Início da Vigência (DD-MM-YYYY)", placeholder="31-12-2026")
-        fim_vigencia_txt = c2.text_input("Fim da Vigência (DD-MM-YYYY)", placeholder="31-12-2027")
+        inicio_vigencia_txt = c1.text_input("Início da Vigência (DDMMAAAA ou DD-MM-AAAA)", placeholder="31122026")
+        fim_vigencia_txt = c2.text_input("Fim da Vigência (DDMMAAAA ou DD-MM-AAAA)", placeholder="31122027")
         salvar = st.form_submit_button("Cadastrar ARP", use_container_width=True)
 
         if salvar:
             inicio_vigencia = parse_data_br(inicio_vigencia_txt)
             fim_vigencia = parse_data_br(fim_vigencia_txt)
             if not all([cod_unico.strip(), numero_sei.strip(), titulo.strip(), inicio_vigencia, fim_vigencia]):
-                st.warning("Preencha todos os campos e informe as datas no padrão DD-MM-YYYY.")
+                st.warning("Preencha todos os campos e informe as datas no padrão DDMMAAAA ou DD-MM-AAAA.")
+            elif not validar_codigo_sei(numero_sei):
+                st.error("Informe o Número SEI no formato 00000.000000-00/AAAA.")
             elif fim_vigencia < inicio_vigencia:
                 st.error("A data final não pode ser menor que a data inicial.")
             else:
@@ -1627,12 +1657,12 @@ if menu == "Editar ARPs":
     )
 
     with st.form("form_editar_contrato"):
-        cod_unico = st.text_input("COD Único", value=contrato_sel["cod_unico"])
-        numero_sei = st.text_input("Número do SEI", value=contrato_sel["numero_sei"])
+        cod_unico = st.text_input("COD Único", value=contrato_sel["cod_unico"], disabled=True)
+        numero_sei = st.text_input("Número do SEI", value=contrato_sel["numero_sei"], help="Formato: 00000.000000-00/AAAA")
         titulo = st.text_input("Título", value=contrato_sel["titulo"])
         c1, c2 = st.columns(2)
-        inicio_txt = c1.text_input("Início da Vigência (DD-MM-YYYY)", value=data_br(contrato_sel["inicio_vigencia"]))
-        fim_txt = c2.text_input("Fim da Vigência (DD-MM-YYYY)", value=data_br(contrato_sel["fim_vigencia"]))
+        inicio_txt = c1.text_input("Início da Vigência (DDMMAAAA ou DD-MM-AAAA)", value=data_br(contrato_sel["inicio_vigencia"]))
+        fim_txt = c2.text_input("Fim da Vigência (DDMMAAAA ou DD-MM-AAAA)", value=data_br(contrato_sel["fim_vigencia"]))
         salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
 
         if salvar:
@@ -1640,6 +1670,8 @@ if menu == "Editar ARPs":
             fim = parse_data_br(fim_txt)
             if not all([cod_unico.strip(), numero_sei.strip(), titulo.strip(), inicio, fim]):
                 st.warning("Preencha todos os campos corretamente.")
+            elif not validar_codigo_sei(numero_sei):
+                st.error("Informe o Número SEI no formato 00000.000000-00/AAAA.")
             elif fim < inicio:
                 st.error("A data final não pode ser menor que a data inicial.")
             else:
