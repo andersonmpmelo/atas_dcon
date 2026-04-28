@@ -233,6 +233,78 @@ def recalc_all_balances():
 
 
 
+def excluir_contrato(cod_unico):
+    """
+    Exclui uma ARP e todos os itens/requisições vinculados.
+    Mantém a consistência do banco SQLite.
+    """
+    itens_vinculados = pd.read_sql(
+        "SELECT id FROM itens WHERE contrato_cod_unico = ?",
+        conn,
+        params=(cod_unico,)
+    )
+
+    for _, item in itens_vinculados.iterrows():
+        conn.execute(
+            "DELETE FROM requisicoes WHERE item_id = ?",
+            (int(item["id"]),)
+        )
+
+    conn.execute(
+        "DELETE FROM itens WHERE contrato_cod_unico = ?",
+        (cod_unico,)
+    )
+
+    conn.execute(
+        "DELETE FROM contratos WHERE cod_unico = ?",
+        (cod_unico,)
+    )
+
+    conn.commit()
+
+
+def excluir_item(item_id):
+    """
+    Exclui um item operacional e suas requisições vinculadas.
+    """
+    conn.execute(
+        "DELETE FROM requisicoes WHERE item_id = ?",
+        (int(item_id),)
+    )
+    conn.execute(
+        "DELETE FROM itens WHERE id = ?",
+        (int(item_id),)
+    )
+    conn.commit()
+
+
+def excluir_catalogo(codigo_item):
+    """
+    Exclui um item do catálogo e todos os itens/requisições vinculados a ele.
+    """
+    itens_vinculados = pd.read_sql(
+        "SELECT id FROM itens WHERE codigo_item = ?",
+        conn,
+        params=(codigo_item,)
+    )
+
+    for _, item in itens_vinculados.iterrows():
+        conn.execute(
+            "DELETE FROM requisicoes WHERE item_id = ?",
+            (int(item["id"]),)
+        )
+
+    conn.execute(
+        "DELETE FROM itens WHERE codigo_item = ?",
+        (codigo_item,)
+    )
+    conn.execute(
+        "DELETE FROM catalogo WHERE codigo_item = ?",
+        (codigo_item,)
+    )
+    conn.commit()
+
+
 # =========================================================
 # PDF
 # =========================================================
