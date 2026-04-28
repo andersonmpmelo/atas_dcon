@@ -304,6 +304,71 @@ def excluir_catalogo(codigo_item):
     )
     conn.commit()
 
+def excluir_categoria(categoria_id):
+    """
+    Exclui categoria e todos os vínculos descendentes:
+    classes -> padrões -> catálogo -> itens -> requisições.
+    """
+    padroes = pd.read_sql("""
+        SELECT pd.id, cat.codigo_item
+        FROM classes cl
+        LEFT JOIN padroes_descritivos pd ON pd.classe_id = cl.id
+        LEFT JOIN catalogo cat ON cat.padrao_descritivo_id = pd.id
+        WHERE cl.categoria_id = ?
+    """, conn, params=(int(categoria_id),))
+
+    for _, row in padroes.dropna(subset=["codigo_item"]).iterrows():
+        excluir_catalogo(row["codigo_item"])
+
+    conn.execute("""
+        DELETE FROM padroes_descritivos
+        WHERE classe_id IN (
+            SELECT id FROM classes WHERE categoria_id = ?
+        )
+    """, (int(categoria_id),))
+    conn.execute("DELETE FROM classes WHERE categoria_id = ?", (int(categoria_id),))
+    conn.execute("DELETE FROM categorias WHERE id = ?", (int(categoria_id),))
+    conn.commit()
+
+
+def excluir_classe(classe_id):
+    """
+    Exclui classe e todos os vínculos descendentes:
+    padrões -> catálogo -> itens -> requisições.
+    """
+    catalogo_vinculado = pd.read_sql("""
+        SELECT cat.codigo_item
+        FROM padroes_descritivos pd
+        LEFT JOIN catalogo cat ON cat.padrao_descritivo_id = pd.id
+        WHERE pd.classe_id = ?
+    """, conn, params=(int(classe_id),))
+
+    for _, row in catalogo_vinculado.dropna(subset=["codigo_item"]).iterrows():
+        excluir_catalogo(row["codigo_item"])
+
+    conn.execute("DELETE FROM padroes_descritivos WHERE classe_id = ?", (int(classe_id),))
+    conn.execute("DELETE FROM classes WHERE id = ?", (int(classe_id),))
+    conn.commit()
+
+
+def excluir_padrao_descritivo(padrao_id):
+    """
+    Exclui padrão descritivo e todos os vínculos descendentes:
+    catálogo -> itens -> requisições.
+    """
+    catalogo_vinculado = pd.read_sql("""
+        SELECT codigo_item
+        FROM catalogo
+        WHERE padrao_descritivo_id = ?
+    """, conn, params=(int(padrao_id),))
+
+    for _, row in catalogo_vinculado.iterrows():
+        excluir_catalogo(row["codigo_item"])
+
+    conn.execute("DELETE FROM padroes_descritivos WHERE id = ?", (int(padrao_id),))
+    conn.commit()
+
+
 
 # =========================================================
 # PDF
@@ -1925,7 +1990,7 @@ if menu == "Editar Catálogo":
 # =========================================================
 if menu == "Codificação":
     if not pode_cadastrar_codificacao():
-        st.error("Somente o usuário nível 0 pode cadastrar informações da Codificação.")
+        st.error("Somente o usuário nível 0 pode cadastrar e editar informações da Codificação.")
         st.stop()
 
     st.title("Codificação")
@@ -1934,6 +1999,7 @@ if menu == "Codificação":
     with abas[0]:
         section_box_start()
         st.subheader("Tabela de Categorias")
+
         with st.form("form_categoria", clear_on_submit=True):
             codigo_categoria = st.text_input("Código da Categoria")
             nome_categoria = st.text_input("Nome da Categoria")
@@ -1943,27 +2009,97 @@ if menu == "Codificação":
                     st.warning("Preencha o código e o nome da categoria.")
                 else:
                     try:
-                        conn.execute("INSERT INTO categorias(codigo_categoria, nome_categoria) VALUES (?, ?)",
-                                     (codigo_categoria.strip(), nome_categoria.strip()))
+                        conn.execute(
+                            "INSERT INTO categorias(codigo_categoria, nome_categoria) VALUES (?, ?)",
+                            (codigo_categoria.strip(), nome_categoria.strip())
+                        )
                         conn.commit()
                         st.success("Categoria cadastrada com sucesso.")
+                        st.rerun()
                     except sqlite3.IntegrityError:
                         st.error("Já existe uma categoria com este código.")
+
         categorias = carregar_categorias()
         if not categorias.empty:
-            st.dataframe(categorias[["codigo_categoria", "nome_categoria"]], use_container_width=True, hide_index=True)
+            st.divider()
+            st.subheader("Editar ou excluir Categoria")
+
+            categoria_sel = st.selectbox(
+                "Selecione a Categoria",
+                categorias.to_dict("records"),
+                format_func=lambda x: f"{x['codigo_categoria']} - {x['nome_categoria']}",
+                key="categoria_edicao_select"
+            )
+
+            with st.form("form_editar_categoria"):
+                novo_codigo_categoria = st.text_input(
+                    "Código da Categoria",
+                    value=categoria_sel["codigo_categoria"],
+                    key="editar_codigo_categoria"
+                )
+                novo_nome_categoria = st.text_input(
+                    "Nome da Categoria",
+                    value=categoria_sel["nome_categoria"],
+                    key="editar_nome_categoria"
+                )
+                salvar_edicao_categoria = st.form_submit_button("Salvar alterações da categoria", use_container_width=True)
+
+                if salvar_edicao_categoria:
+                    if not novo_codigo_categoria.strip() or not novo_nome_categoria.strip():
+                        st.warning("Preencha o código e o nome da categoria.")
+                    else:
+                        try:
+                            conn.execute("""
+                                UPDATE categorias
+                                SET codigo_categoria = ?, nome_categoria = ?
+                                WHERE id = ?
+                            """, (
+                                novo_codigo_categoria.strip(),
+                                novo_nome_categoria.strip(),
+                                int(categoria_sel["id"])
+                            ))
+                            conn.commit()
+                            st.success("Categoria atualizada com sucesso.")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("Já existe outra categoria com este código.")
+
+            st.warning("A exclusão da categoria removerá também classes, padrões, catálogo, itens e requisições vinculadas.")
+            confirmar_categoria = st.checkbox(
+                "Confirmo que desejo excluir esta categoria e seus vínculos",
+                key="confirmar_excluir_categoria"
+            )
+            if st.button("Excluir categoria selecionada", type="primary", use_container_width=True, disabled=not confirmar_categoria):
+                excluir_categoria(int(categoria_sel["id"]))
+                st.success("Categoria excluída com sucesso.")
+                st.rerun()
+
+            st.divider()
+            st.subheader("Categorias cadastradas")
+            st.dataframe(
+                categorias[["codigo_categoria", "nome_categoria"]],
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Nenhuma categoria cadastrada.")
         section_box_end()
 
     with abas[1]:
         section_box_start()
         st.subheader("Tabela de Classes")
         categorias = carregar_categorias()
+
         if categorias.empty:
             st.warning("Cadastre ao menos uma categoria antes de cadastrar classes.")
         else:
-            mapa_categorias = {f"{row['codigo_categoria']} - {row['nome_categoria']}": row["id"] for _, row in categorias.iterrows()}
+            mapa_categorias = {
+                f"{row['codigo_categoria']} - {row['nome_categoria']}": row["id"]
+                for _, row in categorias.iterrows()
+            }
+
             with st.form("form_classe", clear_on_submit=True):
-                categoria_sel = st.selectbox("Categoria", list(mapa_categorias.keys()))
+                categoria_sel_cadastro = st.selectbox("Categoria", list(mapa_categorias.keys()), key="categoria_classe_cadastro")
                 codigo_classe = st.text_input("Código da Classe")
                 nome_classe = st.text_input("Nome da Classe")
                 salvar = st.form_submit_button("Cadastrar classe", use_container_width=True)
@@ -1973,28 +2109,109 @@ if menu == "Codificação":
                     else:
                         try:
                             conn.execute("""
-                                INSERT INTO classes(codigo_classe, nome_classe, categoria_id) VALUES (?, ?, ?)
-                            """, (codigo_classe.strip(), nome_classe.strip(), mapa_categorias[categoria_sel]))
+                                INSERT INTO classes(codigo_classe, nome_classe, categoria_id)
+                                VALUES (?, ?, ?)
+                            """, (
+                                codigo_classe.strip(),
+                                nome_classe.strip(),
+                                int(mapa_categorias[categoria_sel_cadastro])
+                            ))
                             conn.commit()
                             st.success("Classe cadastrada com sucesso.")
+                            st.rerun()
                         except sqlite3.IntegrityError:
                             st.error("Já existe uma classe com este código.")
+
         classes = carregar_classes()
         if not classes.empty:
-            st.dataframe(classes[["codigo_categoria", "nome_categoria", "codigo_classe", "nome_classe"]],
-                         use_container_width=True, hide_index=True)
+            st.divider()
+            st.subheader("Editar ou excluir Classe")
+
+            classe_sel = st.selectbox(
+                "Selecione a Classe",
+                classes.to_dict("records"),
+                format_func=lambda x: f"{x['codigo_classe']} - {x['nome_classe']} | {x['nome_categoria']}",
+                key="classe_edicao_select"
+            )
+
+            mapa_categorias_edicao = {
+                f"{row['codigo_categoria']} - {row['nome_categoria']}": row["id"]
+                for _, row in categorias.iterrows()
+            }
+            labels_categorias = list(mapa_categorias_edicao.keys())
+            label_categoria_atual = next(
+                (label for label, cat_id in mapa_categorias_edicao.items() if int(cat_id) == int(classe_sel["categoria_id"])),
+                labels_categorias[0]
+            )
+
+            with st.form("form_editar_classe"):
+                categoria_edicao = st.selectbox(
+                    "Categoria",
+                    labels_categorias,
+                    index=labels_categorias.index(label_categoria_atual),
+                    key="categoria_classe_edicao"
+                )
+                novo_codigo_classe = st.text_input("Código da Classe", value=classe_sel["codigo_classe"])
+                novo_nome_classe = st.text_input("Nome da Classe", value=classe_sel["nome_classe"])
+                salvar_edicao_classe = st.form_submit_button("Salvar alterações da classe", use_container_width=True)
+
+                if salvar_edicao_classe:
+                    if not novo_codigo_classe.strip() or not novo_nome_classe.strip():
+                        st.warning("Preencha o código e o nome da classe.")
+                    else:
+                        try:
+                            conn.execute("""
+                                UPDATE classes
+                                SET codigo_classe = ?, nome_classe = ?, categoria_id = ?
+                                WHERE id = ?
+                            """, (
+                                novo_codigo_classe.strip(),
+                                novo_nome_classe.strip(),
+                                int(mapa_categorias_edicao[categoria_edicao]),
+                                int(classe_sel["id"])
+                            ))
+                            conn.commit()
+                            st.success("Classe atualizada com sucesso.")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("Já existe outra classe com este código.")
+
+            st.warning("A exclusão da classe removerá também padrões, catálogo, itens e requisições vinculadas.")
+            confirmar_classe = st.checkbox(
+                "Confirmo que desejo excluir esta classe e seus vínculos",
+                key="confirmar_excluir_classe"
+            )
+            if st.button("Excluir classe selecionada", type="primary", use_container_width=True, disabled=not confirmar_classe):
+                excluir_classe(int(classe_sel["id"]))
+                st.success("Classe excluída com sucesso.")
+                st.rerun()
+
+            st.divider()
+            st.subheader("Classes cadastradas")
+            st.dataframe(
+                classes[["codigo_categoria", "nome_categoria", "codigo_classe", "nome_classe"]],
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Nenhuma classe cadastrada.")
         section_box_end()
 
     with abas[2]:
         section_box_start()
         st.subheader("Tabela de Padrão Descritivo")
         classes = carregar_classes()
+
         if classes.empty:
             st.warning("Cadastre ao menos uma classe antes de cadastrar o padrão descritivo.")
         else:
-            mapa_classes = {f"{row['codigo_classe']} - {row['nome_classe']}": row["id"] for _, row in classes.iterrows()}
+            mapa_classes = {
+                f"{row['codigo_classe']} - {row['nome_classe']}": row["id"]
+                for _, row in classes.iterrows()
+            }
+
             with st.form("form_padrao", clear_on_submit=True):
-                classe_sel = st.selectbox("Classe", list(mapa_classes.keys()))
+                classe_sel_cadastro = st.selectbox("Classe", list(mapa_classes.keys()), key="classe_padrao_cadastro")
                 codigo_padrao = st.text_input("Código do Padrão Descritivo")
                 nome_padrao = st.text_input("Nome do Padrão Descritivo")
                 salvar = st.form_submit_button("Cadastrar padrão descritivo", use_container_width=True)
@@ -2006,29 +2223,111 @@ if menu == "Codificação":
                             conn.execute("""
                                 INSERT INTO padroes_descritivos(codigo_padrao_descritivo, nome_padrao_descritivo, classe_id)
                                 VALUES (?, ?, ?)
-                            """, (codigo_padrao.strip(), nome_padrao.strip(), mapa_classes[classe_sel]))
+                            """, (
+                                codigo_padrao.strip(),
+                                nome_padrao.strip(),
+                                int(mapa_classes[classe_sel_cadastro])
+                            ))
                             conn.commit()
                             st.success("Padrão descritivo cadastrado com sucesso.")
+                            st.rerun()
                         except sqlite3.IntegrityError:
                             st.error("Já existe um padrão descritivo com este código.")
+
         padroes = carregar_padroes()
         if not padroes.empty:
-            st.dataframe(padroes[[
-                "codigo_categoria", "nome_categoria", "codigo_classe", "nome_classe",
-                "codigo_padrao_descritivo", "nome_padrao_descritivo"
-            ]], use_container_width=True, hide_index=True)
+            st.divider()
+            st.subheader("Editar ou excluir Padrão Descritivo")
+
+            padrao_sel = st.selectbox(
+                "Selecione o Padrão Descritivo",
+                padroes.to_dict("records"),
+                format_func=lambda x: f"{x['codigo_padrao_descritivo']} - {x['nome_padrao_descritivo']} | {x['nome_classe']}",
+                key="padrao_edicao_select"
+            )
+
+            mapa_classes_edicao = {
+                f"{row['codigo_classe']} - {row['nome_classe']}": row["id"]
+                for _, row in classes.iterrows()
+            }
+            labels_classes = list(mapa_classes_edicao.keys())
+            label_classe_atual = next(
+                (label for label, classe_id in mapa_classes_edicao.items() if int(classe_id) == int(padrao_sel["classe_id"])),
+                labels_classes[0]
+            )
+
+            with st.form("form_editar_padrao"):
+                classe_edicao = st.selectbox(
+                    "Classe",
+                    labels_classes,
+                    index=labels_classes.index(label_classe_atual),
+                    key="classe_padrao_edicao"
+                )
+                novo_codigo_padrao = st.text_input("Código do Padrão Descritivo", value=padrao_sel["codigo_padrao_descritivo"])
+                novo_nome_padrao = st.text_input("Nome do Padrão Descritivo", value=padrao_sel["nome_padrao_descritivo"])
+                salvar_edicao_padrao = st.form_submit_button("Salvar alterações do padrão descritivo", use_container_width=True)
+
+                if salvar_edicao_padrao:
+                    if not novo_codigo_padrao.strip() or not novo_nome_padrao.strip():
+                        st.warning("Preencha o código e o nome do padrão descritivo.")
+                    else:
+                        try:
+                            conn.execute("""
+                                UPDATE padroes_descritivos
+                                SET codigo_padrao_descritivo = ?, nome_padrao_descritivo = ?, classe_id = ?
+                                WHERE id = ?
+                            """, (
+                                novo_codigo_padrao.strip(),
+                                novo_nome_padrao.strip(),
+                                int(mapa_classes_edicao[classe_edicao]),
+                                int(padrao_sel["id"])
+                            ))
+                            conn.commit()
+                            st.success("Padrão descritivo atualizado com sucesso.")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("Já existe outro padrão descritivo com este código.")
+
+            st.warning("A exclusão do padrão removerá também catálogo, itens e requisições vinculadas.")
+            confirmar_padrao = st.checkbox(
+                "Confirmo que desejo excluir este padrão descritivo e seus vínculos",
+                key="confirmar_excluir_padrao"
+            )
+            if st.button("Excluir padrão descritivo selecionado", type="primary", use_container_width=True, disabled=not confirmar_padrao):
+                excluir_padrao_descritivo(int(padrao_sel["id"]))
+                st.success("Padrão descritivo excluído com sucesso.")
+                st.rerun()
+
+            st.divider()
+            st.subheader("Padrões cadastrados")
+            st.dataframe(
+                padroes[[
+                    "codigo_categoria", "nome_categoria",
+                    "codigo_classe", "nome_classe",
+                    "codigo_padrao_descritivo", "nome_padrao_descritivo"
+                ]],
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Nenhum padrão descritivo cadastrado.")
         section_box_end()
 
     with abas[3]:
         section_box_start()
         st.subheader("Tabela de Catálogo")
         padroes = carregar_padroes()
+
         if padroes.empty:
             st.warning("Cadastre ao menos um padrão descritivo antes de cadastrar o catálogo.")
         else:
-            mapa_padroes = {f"{row['codigo_padrao_descritivo']} - {row['nome_padrao_descritivo']}": row["id"] for _, row in padroes.iterrows()}
+            mapa_padroes = {
+                f"{row['codigo_padrao_descritivo']} - {row['nome_padrao_descritivo']}": row["id"]
+                for _, row in padroes.iterrows()
+            }
+
             with st.form("form_catalogo", clear_on_submit=True):
-                padrao_sel = st.selectbox("Padrão Descritivo", list(mapa_padroes.keys()))
+                padrao_sel_cadastro = st.selectbox("Padrão Descritivo", list(mapa_padroes.keys()), key="padrao_catalogo_cadastro")
                 codigo_item = st.text_input("Código do Item")
                 nome_item = st.text_input("Nome do Item")
                 salvar = st.form_submit_button("Cadastrar item no catálogo", use_container_width=True)
@@ -2038,18 +2337,36 @@ if menu == "Codificação":
                     else:
                         try:
                             conn.execute("""
-                                INSERT INTO catalogo(codigo_item, nome_item, padrao_descritivo_id) VALUES (?, ?, ?)
-                            """, (codigo_item.strip(), nome_item.strip(), mapa_padroes[padrao_sel]))
+                                INSERT INTO catalogo(codigo_item, nome_item, padrao_descritivo_id)
+                                VALUES (?, ?, ?)
+                            """, (
+                                codigo_item.strip(),
+                                nome_item.strip(),
+                                int(mapa_padroes[padrao_sel_cadastro])
+                            ))
                             conn.commit()
                             st.success("Item do catálogo cadastrado com sucesso.")
+                            st.rerun()
                         except sqlite3.IntegrityError:
                             st.error("Já existe um item com este código.")
+
         catalogo = carregar_catalogo()
         if not catalogo.empty:
-            st.dataframe(catalogo[[
-                "codigo_categoria", "nome_categoria", "codigo_classe", "nome_classe",
-                "codigo_padrao_descritivo", "nome_padrao_descritivo", "codigo_item", "nome_item"
-            ]], use_container_width=True, hide_index=True)
+            st.divider()
+            st.subheader("Catálogo cadastrado")
+            st.dataframe(
+                catalogo[[
+                    "codigo_categoria", "nome_categoria",
+                    "codigo_classe", "nome_classe",
+                    "codigo_padrao_descritivo", "nome_padrao_descritivo",
+                    "codigo_item", "nome_item"
+                ]],
+                use_container_width=True,
+                hide_index=True
+            )
+            st.info("Para editar ou excluir itens do Catálogo, use o módulo 'Editar Catálogo'.")
+        else:
+            st.info("Nenhum item do catálogo cadastrado.")
         section_box_end()
 
     with abas[4]:
@@ -2059,11 +2376,13 @@ if menu == "Codificação":
         classes = carregar_classes()
         padroes = carregar_padroes()
         catalogo = carregar_catalogo()
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Categorias", len(categorias))
         c2.metric("Classes", len(classes))
         c3.metric("Padrões Descritivos", len(padroes))
         c4.metric("Itens do Catálogo", len(catalogo))
+
         if not catalogo.empty:
             termo = st.text_input("Buscar na Codificação")
             df = catalogo.copy()
@@ -2083,6 +2402,8 @@ if menu == "Codificação":
         else:
             st.info("Nenhum item do catálogo cadastrado.")
         section_box_end()
+
+
 
 # =========================================================
 # USUÁRIOS
