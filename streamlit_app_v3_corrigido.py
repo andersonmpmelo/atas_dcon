@@ -1486,7 +1486,7 @@ if menu == "ARPs":
         texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
 
     usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
-        pdf_bytes = gerar_pdf_consulta_ARPs(contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf, st.session_state.get("usuario", "Usuário não identificado"))
+    pdf_bytes = gerar_pdf_consulta_ARPs(contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf, st.session_state.get("usuario", "Usuário não identificado"))
     if st.session_state.logado:
         st.download_button(
             "Exportar consulta em PDF",
