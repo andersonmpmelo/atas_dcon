@@ -1531,6 +1531,7 @@ if menu == "ARPs":
                             st.write(f"**Detalhes:** {item['detalhes_item']}")
                         with c2:
                             st.write(f"**Quantidade Inicial:** {item['quantidade']}")
+                            st.write(f"**Valor Total Inicial:** {brl(item['valor_total'])}")
 
 # =========================================================
 # REQUISIÇÕES
