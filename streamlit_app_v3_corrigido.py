@@ -410,7 +410,7 @@ def _pdf_add_logo(elements, styles):
     elements.append(Paragraph("<b>Central de Compras</b>", styles["PdfHeader"]))
 
 
-def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justificativa=""):
+def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justificativa="", usuario="Usuário não identificado"):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -438,7 +438,7 @@ def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justific
     elementos.append(Paragraph(f"Filtros aplicados: {filtros_texto}", styles["PdfSmall"]))
     if justificativa.strip():
         elementos.append(Paragraph(f"Justificativa: {justificativa}", styles["PdfSmall"]))
-    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario}", styles["PdfSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario or 'Usuário não identificado'}", styles["PdfSmall"]))
     elementos.append(Paragraph(f"Emitido em: {agora}", styles["PdfSmall"]))
     elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
 
@@ -1485,9 +1485,8 @@ if menu == "ARPs":
     if contratos_filtrados.empty and itens_filtrados.empty:
         texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
 
-    pdf_bytes = gerar_pdf_consulta_ARPs(
-        contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf
-    )
+    usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
+        pdf_bytes = gerar_pdf_consulta_ARPs(contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf, st.session_state.get("usuario", "Usuário não identificado"))
     if st.session_state.logado:
         st.download_button(
             "Exportar consulta em PDF",
