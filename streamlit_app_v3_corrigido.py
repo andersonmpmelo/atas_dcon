@@ -97,9 +97,11 @@ def gerar_cod_unico():
 
 def validar_codigo_sei(codigo):
     """
-    Modelo exigido: 00000.000000-00/AAAA
+    Formato correto do SEI:
+    00000.000000/AAAA-00
+    Exemplo: 00002.004441/2024-46
     """
-    return re.fullmatch(r"\d{5}\.\d{6}-\d{2}/\d{4}", str(codigo or "").strip()) is not None
+    return re.fullmatch(r"\d{5}\.\d{6}/\d{4}-\d{2}", str(codigo or "").strip()) is not None
 
 
 def normalizar_status(inicio, fim):
@@ -1028,6 +1030,208 @@ def card_contrato_html(numero_sei, titulo, inicio, fim, status):
     """
 
 
+
+
+def importar_catalogo_em_massa(arquivo):
+    """
+    Importa CSV para a estrutura:
+    categorias -> classes -> padroes_descritivos -> catalogo.
+
+    Colunas esperadas:
+    codigo_categoria, nome_categoria,
+    codigo_classe, nome_classe,
+    codigo_padrao_descritivo, nome_padrao_descritivo,
+    codigo_item, nome_item
+
+    Colunas extras são ignoradas.
+    """
+    try:
+        df = pd.read_csv(arquivo, dtype=str, sep=None, engine="python")
+    except Exception:
+        arquivo.seek(0)
+        df = pd.read_csv(arquivo, dtype=str)
+
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    df = df.fillna("")
+
+    colunas_obrigatorias = [
+        "codigo_categoria", "nome_categoria",
+        "codigo_classe", "nome_classe",
+        "codigo_padrao_descritivo", "nome_padrao_descritivo",
+        "codigo_item", "nome_item"
+    ]
+
+    faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
+    if faltantes:
+        return {
+            "ok": False,
+            "erro": f"Colunas obrigatórias ausentes: {', '.join(faltantes)}",
+            "linhas": 0,
+            "categorias": 0,
+            "classes": 0,
+            "padroes": 0,
+            "catalogo": 0,
+        }
+
+    df = df[colunas_obrigatorias].copy()
+    for col in colunas_obrigatorias:
+        df[col] = df[col].astype(str).str.strip()
+
+    df = df[
+        (df["codigo_categoria"] != "") &
+        (df["nome_categoria"] != "") &
+        (df["codigo_classe"] != "") &
+        (df["nome_classe"] != "") &
+        (df["codigo_padrao_descritivo"] != "") &
+        (df["nome_padrao_descritivo"] != "") &
+        (df["codigo_item"] != "") &
+        (df["nome_item"] != "")
+    ].drop_duplicates()
+
+    if df.empty:
+        return {
+            "ok": False,
+            "erro": "O arquivo não possui linhas válidas para importação.",
+            "linhas": 0,
+            "categorias": 0,
+            "classes": 0,
+            "padroes": 0,
+            "catalogo": 0,
+        }
+
+    total_cat = total_cl = total_pd = total_it = 0
+
+    try:
+        with conn:
+            for _, row in df.iterrows():
+                codigo_categoria = row["codigo_categoria"]
+                nome_categoria = row["nome_categoria"]
+                codigo_classe = row["codigo_classe"]
+                nome_classe = row["nome_classe"]
+                codigo_padrao = row["codigo_padrao_descritivo"]
+                nome_padrao = row["nome_padrao_descritivo"]
+                codigo_item = row["codigo_item"]
+                nome_item = row["nome_item"]
+
+                # Categoria
+                existente = conn.execute(
+                    "SELECT id FROM categorias WHERE codigo_categoria = ?",
+                    (codigo_categoria,)
+                ).fetchone()
+
+                if existente is None:
+                    conn.execute(
+                        "INSERT INTO categorias(codigo_categoria, nome_categoria) VALUES (?, ?)",
+                        (codigo_categoria, nome_categoria)
+                    )
+                    total_cat += 1
+                else:
+                    conn.execute(
+                        "UPDATE categorias SET nome_categoria = ? WHERE codigo_categoria = ?",
+                        (nome_categoria, codigo_categoria)
+                    )
+
+                categoria_id = conn.execute(
+                    "SELECT id FROM categorias WHERE codigo_categoria = ?",
+                    (codigo_categoria,)
+                ).fetchone()["id"]
+
+                # Classe
+                existente = conn.execute(
+                    "SELECT id FROM classes WHERE codigo_classe = ?",
+                    (codigo_classe,)
+                ).fetchone()
+
+                if existente is None:
+                    conn.execute(
+                        "INSERT INTO classes(codigo_classe, nome_classe, categoria_id) VALUES (?, ?, ?)",
+                        (codigo_classe, nome_classe, int(categoria_id))
+                    )
+                    total_cl += 1
+                else:
+                    conn.execute(
+                        "UPDATE classes SET nome_classe = ?, categoria_id = ? WHERE codigo_classe = ?",
+                        (nome_classe, int(categoria_id), codigo_classe)
+                    )
+
+                classe_id = conn.execute(
+                    "SELECT id FROM classes WHERE codigo_classe = ?",
+                    (codigo_classe,)
+                ).fetchone()["id"]
+
+                # Padrão Descritivo
+                existente = conn.execute(
+                    "SELECT id FROM padroes_descritivos WHERE codigo_padrao_descritivo = ?",
+                    (codigo_padrao,)
+                ).fetchone()
+
+                if existente is None:
+                    conn.execute(
+                        """
+                        INSERT INTO padroes_descritivos(
+                            codigo_padrao_descritivo,
+                            nome_padrao_descritivo,
+                            classe_id
+                        )
+                        VALUES (?, ?, ?)
+                        """,
+                        (codigo_padrao, nome_padrao, int(classe_id))
+                    )
+                    total_pd += 1
+                else:
+                    conn.execute(
+                        """
+                        UPDATE padroes_descritivos
+                        SET nome_padrao_descritivo = ?, classe_id = ?
+                        WHERE codigo_padrao_descritivo = ?
+                        """,
+                        (nome_padrao, int(classe_id), codigo_padrao)
+                    )
+
+                padrao_id = conn.execute(
+                    "SELECT id FROM padroes_descritivos WHERE codigo_padrao_descritivo = ?",
+                    (codigo_padrao,)
+                ).fetchone()["id"]
+
+                # Catálogo
+                existente = conn.execute(
+                    "SELECT id FROM catalogo WHERE codigo_item = ?",
+                    (codigo_item,)
+                ).fetchone()
+
+                if existente is None:
+                    conn.execute(
+                        "INSERT INTO catalogo(codigo_item, nome_item, padrao_descritivo_id) VALUES (?, ?, ?)",
+                        (codigo_item, nome_item, int(padrao_id))
+                    )
+                    total_it += 1
+                else:
+                    conn.execute(
+                        "UPDATE catalogo SET nome_item = ?, padrao_descritivo_id = ? WHERE codigo_item = ?",
+                        (nome_item, int(padrao_id), codigo_item)
+                    )
+
+        return {
+            "ok": True,
+            "erro": "",
+            "linhas": len(df),
+            "categorias": total_cat,
+            "classes": total_cl,
+            "padroes": total_pd,
+            "catalogo": total_it,
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "erro": str(e),
+            "linhas": 0,
+            "categorias": 0,
+            "classes": 0,
+            "padroes": 0,
+            "catalogo": 0,
+        }
+
 # =========================================================
 # APP
 # =========================================================
@@ -1649,7 +1853,7 @@ if menu == "Cadastro de ARPs":
     with st.form("form_contrato", clear_on_submit=True):
         cod_unico = gerar_cod_unico()
         st.text_input("COD Único gerado automaticamente", value=cod_unico, disabled=True)
-        numero_sei = st.text_input("Número do SEI", placeholder="00000.000000-00/2026")
+        numero_sei = st.text_input("Número do SEI", placeholder="00002.004441/2024-46")
         titulo = st.text_input("Título")
         c1, c2 = st.columns(2)
         inicio_vigencia_txt = c1.text_input("Início da Vigência (DDMMAAAA ou DD-MM-AAAA)", placeholder="31122026")
@@ -1662,7 +1866,7 @@ if menu == "Cadastro de ARPs":
             if not all([cod_unico.strip(), numero_sei.strip(), titulo.strip(), inicio_vigencia, fim_vigencia]):
                 st.warning("Preencha todos os campos e informe as datas no padrão DDMMAAAA ou DD-MM-AAAA.")
             elif not validar_codigo_sei(numero_sei):
-                st.error("Informe o Número SEI no formato 00000.000000-00/AAAA.")
+                st.error("Informe o Número SEI no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
             elif fim_vigencia < inicio_vigencia:
                 st.error("A data final não pode ser menor que a data inicial.")
             else:
@@ -1795,7 +1999,7 @@ if menu == "Editar ARPs":
 
     with st.form("form_editar_contrato"):
         cod_unico = st.text_input("COD Único", value=contrato_sel["cod_unico"], disabled=True)
-        numero_sei = st.text_input("Número do SEI", value=contrato_sel["numero_sei"], help="Formato: 00000.000000-00/AAAA")
+        numero_sei = st.text_input("Número do SEI", value=contrato_sel["numero_sei"], help="Formato: 00000.000000/AAAA-00")
         titulo = st.text_input("Título", value=contrato_sel["titulo"])
         c1, c2 = st.columns(2)
         inicio_txt = c1.text_input("Início da Vigência (DDMMAAAA ou DD-MM-AAAA)", value=data_br(contrato_sel["inicio_vigencia"]))
@@ -1808,7 +2012,7 @@ if menu == "Editar ARPs":
             if not all([cod_unico.strip(), numero_sei.strip(), titulo.strip(), inicio, fim]):
                 st.warning("Preencha todos os campos corretamente.")
             elif not validar_codigo_sei(numero_sei):
-                st.error("Informe o Número SEI no formato 00000.000000-00/AAAA.")
+                st.error("Informe o Número SEI no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
             elif fim < inicio:
                 st.error("A data final não pode ser menor que a data inicial.")
             else:
@@ -2316,6 +2520,39 @@ if menu == "Codificação":
     with abas[3]:
         section_box_start()
         st.subheader("Tabela de Catálogo")
+
+        st.markdown("#### Importação em massa do Catálogo")
+        st.caption("Envie um CSV com as colunas: codigo_categoria, nome_categoria, codigo_classe, nome_classe, codigo_padrao_descritivo, nome_padrao_descritivo, codigo_item, nome_item.")
+
+        arquivo_catalogo = st.file_uploader(
+            "Importar CSV do Catálogo",
+            type=["csv"],
+            key="upload_catalogo_massa"
+        )
+
+        if arquivo_catalogo is not None:
+            preview_df = pd.read_csv(arquivo_catalogo, dtype=str, sep=None, engine="python")
+            arquivo_catalogo.seek(0)
+            st.write("Prévia do arquivo:")
+            st.dataframe(preview_df.head(20), use_container_width=True, hide_index=True)
+
+            if st.button("Importar catálogo em massa", use_container_width=True):
+                resultado = importar_catalogo_em_massa(arquivo_catalogo)
+
+                if resultado["ok"]:
+                    st.success(
+                        f"Importação concluída. Linhas processadas: {resultado['linhas']} | "
+                        f"Categorias novas: {resultado['categorias']} | "
+                        f"Classes novas: {resultado['classes']} | "
+                        f"Padrões novos: {resultado['padroes']} | "
+                        f"Itens novos no catálogo: {resultado['catalogo']}"
+                    )
+                    st.rerun()
+                else:
+                    st.error(f"Falha na importação: {resultado['erro']}")
+
+            st.divider()
+
         padroes = carregar_padroes()
 
         if padroes.empty:
