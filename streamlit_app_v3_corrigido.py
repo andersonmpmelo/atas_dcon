@@ -1658,12 +1658,8 @@ if menu == "ARPs":
 
     if not st.session_state.logado:
         st.info("Faça login para exportar a consulta em PDF.")
-    elif numero_sei == "Todos":
-        st.warning("Para exportar o PDF, selecione obrigatoriamente um Número SEI específico.")
-    elif not validar_codigo_sei(numero_sei):
-        st.error("O Número SEI selecionado não está no formato exigido: 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-    elif padrao_texto == "Todos":
-        st.warning("Para exportar o PDF, selecione obrigatoriamente um Padrão Descritivo.")
+    elif filtro_status == "Todos":
+        st.warning("Para exportar o PDF, selecione obrigatoriamente um Status válido")
     elif not referencia_pdf:
         st.warning("Para exportar o PDF, informe obrigatoriamente a Referência (Processo SEI).")
     elif not validar_codigo_sei(referencia_pdf):
