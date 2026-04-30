@@ -105,14 +105,37 @@ def validar_codigo_sei(codigo):
 
 
 def normalizar_status(inicio, fim):
+    """
+    Atualiza status de forma dinâmica:
+    - VENCIDA: fim da vigência anterior à data atual
+    - PRÓXIMO AO VENCIMENTO: fim da vigência entre hoje e os próximos 30 dias
+    - VIGENTE: demais casos
+    """
     try:
         if isinstance(fim, str):
-            fim_dt = pd.to_datetime(fim, dayfirst=True).date()
+            txt = fim.strip()
+            for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d%m%Y", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    fim_dt = datetime.strptime(txt[:19], fmt).date()
+                    break
+                except Exception:
+                    fim_dt = None
+            if fim_dt is None:
+                fim_dt = pd.to_datetime(fim, dayfirst=True).date()
         else:
             fim_dt = pd.to_datetime(fim).date()
     except Exception:
         return "VIGENTE"
-    return "VENCIDA" if fim_dt < date.today() else "VIGENTE"
+
+    hoje = date.today()
+    dias_restantes = (fim_dt - hoje).days
+
+    if dias_restantes < 0:
+        return "VENCIDA"
+    elif dias_restantes <= 30:
+        return "PRÓXIMO AO VENCIMENTO"
+    else:
+        return "VIGENTE"
 
 
 def normalizar_texto(txt):
@@ -158,7 +181,14 @@ def match_inteligente(consulta, texto):
 
 def status_badge_html(status):
     status = str(status or "").upper()
-    classe = "status-vigente" if status == "VIGENTE" else "status-vencida" if status == "VENCIDA" else "status-pendente"
+    if status == "VIGENTE":
+        classe = "status-vigente"
+    elif status == "VENCIDA":
+        classe = "status-vencida"
+    elif status == "PRÓXIMO AO VENCIMENTO":
+        classe = "status-proximo"
+    else:
+        classe = "status-pendente"
     return f'<span class="status-pill {classe}">{status}</span>'
 
 
@@ -815,6 +845,15 @@ def carregar_contratos():
     """, conn)
     if not df.empty:
         df["status"] = df.apply(lambda x: normalizar_status(x["inicio_vigencia"], x["fim_vigencia"]), axis=1)
+
+        # Atualiza o banco para manter consistência nas demais telas.
+        for _, row in df.iterrows():
+            conn.execute(
+                "UPDATE contratos SET status = ? WHERE id = ?",
+                (row["status"], int(row["id"]))
+            )
+        conn.commit()
+
     return df
 
 
@@ -996,7 +1035,14 @@ def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei=
 
 
 def card_contrato_html(numero_sei, titulo, inicio, fim, status):
-    cor = COR_VERDE if status == "VIGENTE" else COR_VERMELHO
+    if status == "VIGENTE":
+        cor = COR_VERDE
+    elif status == "VENCIDA":
+        cor = COR_VERMELHO
+    elif status == "PRÓXIMO AO VENCIMENTO":
+        cor = COR_AMARELO
+    else:
+        cor = COR_AZUL
     return f"""
     <div style="
         border:1px solid {COR_BORDA};
@@ -1411,7 +1457,7 @@ if menu == "ARPs":
         "Número SEI",
         ["Todos"] + sorted(contratos_df["numero_sei"].astype(str).unique().tolist())
     )
-    filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "VENCIDA"])
+    filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
     padrao_texto = c4.text_input("Padrão Descritivo")
     justificativa_pdf = st.text_area("Justificativa para constar no PDF", placeholder="Descreva a finalidade da consulta ou do atesto.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1485,7 +1531,6 @@ if menu == "ARPs":
                             st.write(f"**Detalhes:** {item['detalhes_item']}")
                         with c2:
                             st.write(f"**Quantidade Inicial:** {item['quantidade']}")
-                            st.write(f"**Valor Total Inicial:** {brl(item['valor_total'])}")
 
 # =========================================================
 # REQUISIÇÕES
@@ -1510,7 +1555,7 @@ if menu == "Requisições":
         "Número SEI",
         ["Todos"] + sorted([x for x in itens_df["numero_sei"].dropna().astype(str).unique().tolist()])
     )
-    status_contrato = c2.selectbox("Status da ARP", ["Todos", "VIGENTE", "VENCIDA"])
+    status_contrato = c2.selectbox("Status da ARP", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
     padrao_filtro = c3.text_input("Padrão Descritivo")
     texto = c4.text_input("Item, detalhe ou categoria")
     somente_disponiveis = st.checkbox("Mostrar apenas itens com quantidade disponível", value=True)
