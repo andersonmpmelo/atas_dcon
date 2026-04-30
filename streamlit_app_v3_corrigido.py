@@ -656,6 +656,16 @@ CREATE TABLE IF NOT EXISTS usuarios(
 """)
 
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS usuario_modulos(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    modulo TEXT NOT NULL,
+    permitido INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(username, modulo)
+)
+""")
+
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS contratos(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cod_unico TEXT UNIQUE NOT NULL,
@@ -781,6 +791,8 @@ if cursor.fetchone() is None:
     )
     conn.commit()
 
+garantir_permissoes_usuario("AndersonMPMelo", 0)
+
 if "logado" not in st.session_state:
     st.session_state.logado = False
 if "usuario" not in st.session_state:
@@ -820,6 +832,111 @@ def pode_aprovar():
     return st.session_state.logado and st.session_state.nivel in [0, 1]
 
 
+MODULOS_SISTEMA = [
+    "Dashboard",
+    "ARPs",
+    "Requisições",
+    "Aprovação de Requisições",
+    "Cadastro de ARPs",
+    "Cadastro de Itens",
+    "Editar ARPs",
+    "Editar Itens",
+    "Editar Catálogo",
+    "Editar Requisições",
+    "Codificação",
+    "Usuários",
+]
+
+
+def modulos_padrao_por_nivel(nivel):
+    if nivel == 0:
+        return MODULOS_SISTEMA.copy()
+    if nivel == 1:
+        return [
+            "Dashboard",
+            "ARPs",
+            "Requisições",
+            "Aprovação de Requisições",
+            "Editar ARPs",
+            "Editar Itens",
+            "Editar Catálogo",
+        ]
+    if nivel == 2:
+        return [
+            "ARPs",
+            "Requisições",
+            "Cadastro de ARPs",
+            "Cadastro de Itens",
+        ]
+    return ["ARPs"]
+
+
+def garantir_permissoes_usuario(username, nivel):
+    if not username:
+        return
+
+    existentes = pd.read_sql(
+        "SELECT modulo FROM usuario_modulos WHERE username = ?",
+        conn,
+        params=(username,)
+    )
+    existentes_set = set(existentes["modulo"].tolist()) if not existentes.empty else set()
+    padrao = set(modulos_padrao_por_nivel(int(nivel)))
+
+    for modulo in MODULOS_SISTEMA:
+        if modulo not in existentes_set:
+            permitido = 1 if modulo in padrao else 0
+            conn.execute(
+                "INSERT OR IGNORE INTO usuario_modulos(username, modulo, permitido) VALUES (?, ?, ?)",
+                (username, modulo, permitido)
+            )
+    conn.commit()
+
+
+def usuario_tem_modulo(username, modulo):
+    if modulo == "ARPs" and not st.session_state.logado:
+        return True
+
+    if not st.session_state.logado:
+        return False
+
+    if st.session_state.nivel == 0:
+        return True
+
+    garantir_permissoes_usuario(username, st.session_state.nivel)
+
+    row = conn.execute(
+        "SELECT permitido FROM usuario_modulos WHERE username = ? AND modulo = ?",
+        (username, modulo)
+    ).fetchone()
+
+    if row is None:
+        return modulo in modulos_padrao_por_nivel(st.session_state.nivel)
+
+    return int(row["permitido"]) == 1
+
+
+def filtrar_modulos_permitidos(modulos):
+    if not st.session_state.logado:
+        return [m for m in modulos if m == "ARPs"]
+
+    if st.session_state.nivel == 0:
+        return modulos
+
+    return [m for m in modulos if usuario_tem_modulo(st.session_state.usuario, m)]
+
+
+def excluir_usuario(username):
+    if username == st.session_state.usuario:
+        raise ValueError("Não é possível excluir o próprio usuário logado.")
+    if username == "AndersonMPMelo":
+        raise ValueError("Não é possível excluir o administrador padrão.")
+
+    conn.execute("DELETE FROM usuario_modulos WHERE username = ?", (username,))
+    conn.execute("DELETE FROM usuarios WHERE username = ?", (username,))
+    conn.commit()
+
+
 def login_sidebar():
     with st.sidebar:
         st.markdown("## Acesso")
@@ -836,6 +953,7 @@ def login_sidebar():
                         st.session_state.logado = True
                         st.session_state.usuario = dados["username"]
                         st.session_state.nivel = dados["nivel"]
+                        garantir_permissoes_usuario(dados["username"], dados["nivel"])
                         st.rerun()
                     else:
                         st.error("Usuário ou senha inválidos.")
@@ -1319,22 +1437,31 @@ login_sidebar()
 render_header()
 
 menu_publico = ["ARPs"]
-menu_logado = menu_publico + ["Requisições"]
-if pode_editar_dados():
-    menu_logado = ["Dashboard"] + menu_logado
-if pode_aprovar():
-    menu_logado = menu_logado + ["Aprovação de Requisições"]
-menu_logado = menu_logado + ["Cadastro de ARPs", "Cadastro de Itens"]
-if pode_editar_dados():
-    menu_logado = menu_logado + ["Editar ARPs", "Editar Itens", "Editar Catálogo"]
-menu_admin = menu_logado + ["Editar Requisições", "Codificação", "Usuários"]
+menu_base_logado = [
+    "Dashboard",
+    "ARPs",
+    "Requisições",
+    "Aprovação de Requisições",
+    "Cadastro de ARPs",
+    "Cadastro de Itens",
+    "Editar ARPs",
+    "Editar Itens",
+    "Editar Catálogo",
+    "Editar Requisições",
+    "Codificação",
+    "Usuários",
+]
 
 if is_admin():
-    opcoes_menu = menu_admin
+    opcoes_menu = menu_base_logado
 elif st.session_state.logado:
-    opcoes_menu = menu_logado
+    opcoes_menu = filtrar_modulos_permitidos(menu_base_logado)
 else:
     opcoes_menu = menu_publico
+
+if not opcoes_menu:
+    st.sidebar.error("Seu usuário não possui módulos liberados.")
+    st.stop()
 
 menu = st.sidebar.selectbox("Menu", opcoes_menu)
 
@@ -1521,9 +1648,15 @@ if menu == "ARPs":
     if contratos_filtrados.empty and itens_filtrados.empty:
         texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
 
-    usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
-    pdf_bytes = gerar_pdf_consulta_ARPs(contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf, st.session_state.get("usuario", "Usuário não identificado"))
     if st.session_state.logado:
+        usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
+        pdf_bytes = gerar_pdf_consulta_ARPs(
+            contratos_export,
+            resumo_filtros,
+            texto_inexistencia,
+            justificativa_pdf,
+            usuario_pdf
+        )
         st.download_button(
             "Exportar consulta em PDF",
             data=pdf_bytes,
@@ -2731,29 +2864,170 @@ if menu == "Codificação":
 # USUÁRIOS
 # =========================================================
 if menu == "Usuários":
-    if not is_admin():
-        st.error("Somente o administrador pode gerenciar usuários.")
+    if not usuario_tem_modulo(st.session_state.usuario, "Usuários"):
+        st.error("Você não possui permissão para acessar este módulo.")
         st.stop()
 
-    st.title("Cadastro de Usuários")
+    if not is_admin():
+        st.error("Somente o administrador nível 0 pode gerenciar usuários.")
+        st.stop()
+
+    st.title("Cadastro e Permissões de Usuários")
+
     section_box_start()
+    st.subheader("Criar novo usuário")
     with st.form("form_usuario", clear_on_submit=True):
         user = st.text_input("Usuário")
         senha = st.text_input("Senha", type="password")
         nivel = st.selectbox("Nível", [0, 1, 2])
         salvar = st.form_submit_button("Criar usuário", use_container_width=True)
+
         if salvar:
             if not user.strip() or not senha.strip():
                 st.warning("Informe usuário e senha.")
             else:
                 try:
                     senha_hash = bcrypt.hashpw(senha.encode(), bcrypt.gensalt())
-                    conn.execute("INSERT INTO usuarios(username, password, nivel) VALUES (?, ?, ?)",
-                                 (user.strip(), senha_hash, nivel))
+                    conn.execute(
+                        "INSERT INTO usuarios(username, password, nivel) VALUES (?, ?, ?)",
+                        (user.strip(), senha_hash, int(nivel))
+                    )
                     conn.commit()
+                    garantir_permissoes_usuario(user.strip(), int(nivel))
                     st.success("Usuário criado com sucesso.")
+                    st.rerun()
                 except sqlite3.IntegrityError:
                     st.error("Já existe um usuário com este nome.")
-    usuarios = pd.read_sql("SELECT username, nivel FROM usuarios ORDER BY nivel, username", conn)
-    st.dataframe(usuarios, use_container_width=True, hide_index=True)
     section_box_end()
+
+    usuarios = pd.read_sql("SELECT id, username, nivel FROM usuarios ORDER BY nivel, username", conn)
+
+    section_box_start()
+    st.subheader("Usuários cadastrados")
+    st.dataframe(
+        usuarios[["username", "nivel"]].rename(columns={"username": "Usuário", "nivel": "Nível"}),
+        use_container_width=True,
+        hide_index=True
+    )
+    section_box_end()
+
+    if not usuarios.empty:
+        section_box_start()
+        st.subheader("Editar nível, permissões e exclusão")
+
+        usuario_sel = st.selectbox(
+            "Selecione o usuário",
+            usuarios.to_dict("records"),
+            format_func=lambda x: f"{x['username']} | Nível {x['nivel']}",
+            key="usuario_gerenciar_select"
+        )
+
+        garantir_permissoes_usuario(usuario_sel["username"], int(usuario_sel["nivel"]))
+
+        st.markdown("#### Dados do usuário")
+        novo_nivel = st.selectbox(
+            "Nível do usuário",
+            [0, 1, 2],
+            index=[0, 1, 2].index(int(usuario_sel["nivel"])),
+            key="editar_nivel_usuario",
+            disabled=(usuario_sel["username"] == "AndersonMPMelo")
+        )
+
+        if st.button("Salvar nível do usuário", use_container_width=True, disabled=(usuario_sel["username"] == "AndersonMPMelo")):
+            conn.execute(
+                "UPDATE usuarios SET nivel = ? WHERE username = ?",
+                (int(novo_nivel), usuario_sel["username"])
+            )
+            conn.commit()
+            garantir_permissoes_usuario(usuario_sel["username"], int(novo_nivel))
+            st.success("Nível atualizado com sucesso.")
+            st.rerun()
+
+        st.divider()
+        st.markdown("#### Permissões por módulo")
+
+        permissoes_df = pd.read_sql(
+            "SELECT modulo, permitido FROM usuario_modulos WHERE username = ?",
+            conn,
+            params=(usuario_sel["username"],)
+        )
+
+        permissoes_map = {
+            row["modulo"]: bool(row["permitido"])
+            for _, row in permissoes_df.iterrows()
+        }
+
+        novas_permissoes = {}
+        col1, col2 = st.columns(2)
+
+        for idx, modulo in enumerate(MODULOS_SISTEMA):
+            valor_padrao = permissoes_map.get(
+                modulo,
+                modulo in modulos_padrao_por_nivel(int(usuario_sel["nivel"]))
+            )
+
+            disabled = usuario_sel["username"] == "AndersonMPMelo"
+
+            if idx % 2 == 0:
+                with col1:
+                    novas_permissoes[modulo] = st.checkbox(
+                        modulo,
+                        value=valor_padrao,
+                        key=f"perm_{usuario_sel['username']}_{modulo}",
+                        disabled=disabled
+                    )
+            else:
+                with col2:
+                    novas_permissoes[modulo] = st.checkbox(
+                        modulo,
+                        value=valor_padrao,
+                        key=f"perm_{usuario_sel['username']}_{modulo}",
+                        disabled=disabled
+                    )
+
+        if st.button("Salvar permissões por módulo", use_container_width=True, disabled=(usuario_sel["username"] == "AndersonMPMelo")):
+            for modulo, permitido in novas_permissoes.items():
+                conn.execute("""
+                    INSERT INTO usuario_modulos(username, modulo, permitido)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(username, modulo)
+                    DO UPDATE SET permitido = excluded.permitido
+                """, (
+                    usuario_sel["username"],
+                    modulo,
+                    1 if permitido else 0
+                ))
+
+            conn.commit()
+            st.success("Permissões atualizadas com sucesso.")
+            st.rerun()
+
+        st.divider()
+        st.markdown("#### Excluir usuário")
+        st.warning("A exclusão remove o usuário e suas permissões. As requisições históricas permanecerão registradas com o nome do solicitante.")
+
+        bloqueia_exclusao = (
+            usuario_sel["username"] == st.session_state.usuario
+            or usuario_sel["username"] == "AndersonMPMelo"
+        )
+
+        confirmar_exclusao = st.checkbox(
+            f"Confirmo que desejo excluir o usuário {usuario_sel['username']}",
+            key="confirmar_excluir_usuario",
+            disabled=bloqueia_exclusao
+        )
+
+        if st.button(
+            "Excluir usuário selecionado",
+            type="primary",
+            use_container_width=True,
+            disabled=(not confirmar_exclusao or bloqueia_exclusao)
+        ):
+            try:
+                excluir_usuario(usuario_sel["username"])
+                st.success("Usuário excluído com sucesso.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+        section_box_end()
