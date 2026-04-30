@@ -155,25 +155,44 @@ def similaridade(a, b):
 
 
 def match_inteligente(consulta, texto):
+    """
+    Busca tolerante a grafia:
+    - remove acentos e pontuação
+    - compara por inclusão direta
+    - exige que os termos principais da consulta apareçam no texto
+    - usa similaridade como apoio
+    """
     consulta_n = normalizar_texto(consulta)
     texto_n = normalizar_texto(texto)
 
     if not consulta_n:
         return True
+
     if consulta_n in texto_n:
         return True
 
     termos = [t for t in consulta_n.split() if len(t) > 1]
+
     if termos:
-        hits = sum(1 for t in termos if t in texto_n)
-        if hits >= max(1, len(termos) - 1):
+        # Exige todos os termos principais no texto consolidado.
+        if all(t in texto_n for t in termos):
             return True
 
-    if similaridade(consulta_n, texto_n) >= 0.72:
+        # Permite pequena tolerância quando a busca tem 3 ou mais termos.
+        hits = sum(1 for t in termos if t in texto_n)
+        if len(termos) >= 3 and hits >= len(termos) - 1:
+            return True
+
+    if similaridade(consulta_n, texto_n) >= 0.70:
         return True
 
-    for trecho in texto_n.split():
-        if similaridade(consulta_n, trecho) >= 0.82:
+    palavras_texto = texto_n.split()
+    for termo in termos:
+        if any(similaridade(termo, palavra) >= 0.84 for palavra in palavras_texto):
+            continue
+        break
+    else:
+        if termos:
             return True
 
     return False
@@ -996,41 +1015,54 @@ def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei=
         contratos_filtrados = contratos_filtrados[contratos_filtrados["status"] == filtro_status]
         itens_filtrados = itens_filtrados[itens_filtrados["status"] == filtro_status]
 
-    if padrao_texto:
+    if padrao_texto and padrao_texto != "Todos":
         itens_filtrados = itens_filtrados[
             itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_texto, x))
         ]
 
     if busca_geral:
         mask_contrato = contratos_filtrados.apply(
-            lambda row: (
-                match_inteligente(busca_geral, row["titulo"]) or
-                match_inteligente(busca_geral, row["numero_sei"]) or
-                match_inteligente(busca_geral, row["cod_unico"])
+            lambda row: match_inteligente(
+                busca_geral,
+                f"{row.get('titulo', '')} {row.get('numero_sei', '')} {row.get('cod_unico', '')} {row.get('status', '')}"
             ),
             axis=1
         )
-        ARPs_por_texto = contratos_filtrados[mask_contrato]
+        contratos_por_texto = contratos_filtrados[mask_contrato]
 
-        mask_itens = itens_filtrados.apply(
-            lambda row: (
-                match_inteligente(busca_geral, row["nome_item"]) or
-                match_inteligente(busca_geral, row["detalhes_item"]) or
-                match_inteligente(busca_geral, row["nome_padrao_descritivo"]) or
-                match_inteligente(busca_geral, row["nome_classe"]) or
-                match_inteligente(busca_geral, row["nome_categoria"])
-            ),
-            axis=1
-        )
-        itens_por_texto = itens_filtrados[mask_itens]
+        if not itens_filtrados.empty:
+            mask_itens = itens_filtrados.apply(
+                lambda row: match_inteligente(
+                    busca_geral,
+                    " ".join([
+                        str(row.get("nome_item", "")),
+                        str(row.get("detalhes_item", "")),
+                        str(row.get("nome_padrao_descritivo", "")),
+                        str(row.get("codigo_padrao_descritivo", "")),
+                        str(row.get("nome_classe", "")),
+                        str(row.get("codigo_classe", "")),
+                        str(row.get("nome_categoria", "")),
+                        str(row.get("codigo_categoria", "")),
+                        str(row.get("numero_sei", "")),
+                        str(row.get("titulo", "")),
+                    ])
+                ),
+                axis=1
+            )
+            itens_por_texto = itens_filtrados[mask_itens]
+        else:
+            itens_por_texto = itens_filtrados
 
-        cods_contrato = set(ARPs_por_texto["cod_unico"].tolist()) | set(itens_por_texto["contrato_cod_unico"].dropna().tolist())
+        cods_contrato = set(contratos_por_texto["cod_unico"].tolist()) | set(itens_por_texto["contrato_cod_unico"].dropna().tolist())
 
         contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].isin(cods_contrato)]
-        itens_filtrados = itens_filtrados[itens_filtrados["contrato_cod_unico"].isin(cods_contrato)]
 
+        # Quando a busca livre encontra item, mostra apenas os itens aderentes.
+        # Quando encontra apenas ARP, mostra todos os itens das ARPs aderentes.
         if not itens_por_texto.empty:
             itens_filtrados = itens_filtrados[itens_filtrados["id"].isin(itens_por_texto["id"].tolist())]
+        else:
+            itens_filtrados = itens_filtrados[itens_filtrados["contrato_cod_unico"].isin(cods_contrato)]
 
     return contratos_filtrados, itens_filtrados
 
@@ -1459,7 +1491,11 @@ if menu == "ARPs":
         ["Todos"] + sorted(contratos_df["numero_sei"].astype(str).unique().tolist())
     )
     filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
-    padrao_texto = c4.text_input("Padrão Descritivo")
+    padroes_opcoes = ["Todos"] + sorted([
+        str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
+        if str(x).strip()
+    ])
+    padrao_texto = c4.selectbox("Padrão Descritivo", padroes_opcoes)
     justificativa_pdf = st.text_area("Justificativa para constar no PDF", placeholder="Descreva a finalidade da consulta ou do atesto.")
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1471,7 +1507,7 @@ if menu == "ARPs":
         f"Busca: {busca_geral or 'Nenhuma'} | "
         f"Nº SEI: {numero_sei} | "
         f"Status: {filtro_status} | "
-        f"Padrão Descritivo: {padrao_texto or 'Nenhum'}"
+        f"Padrão Descritivo: {padrao_texto if padrao_texto != 'Todos' else 'Nenhum'}"
     )
 
     contratos_export = contratos_filtrados.copy()
@@ -1486,7 +1522,7 @@ if menu == "ARPs":
         texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
 
     usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
-    pdf_bytes = gerar_pdf_consulta_ARPs(contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf, st.session_state.get("usuario", "Usuário não identificado"))
+        pdf_bytes = gerar_pdf_consulta_ARPs(contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf, st.session_state.get("usuario", "Usuário não identificado"))
     if st.session_state.logado:
         st.download_button(
             "Exportar consulta em PDF",
@@ -1531,6 +1567,7 @@ if menu == "ARPs":
                             st.write(f"**Detalhes:** {item['detalhes_item']}")
                         with c2:
                             st.write(f"**Quantidade Inicial:** {item['quantidade']}")
+                            st.write(f"**Valor Total Inicial:** {brl(item['valor_total'])}")
 
 # =========================================================
 # REQUISIÇÕES
@@ -1556,7 +1593,11 @@ if menu == "Requisições":
         ["Todos"] + sorted([x for x in itens_df["numero_sei"].dropna().astype(str).unique().tolist()])
     )
     status_contrato = c2.selectbox("Status da ARP", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
-    padrao_filtro = c3.text_input("Padrão Descritivo")
+    padroes_req_opcoes = ["Todos"] + sorted([
+        str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
+        if str(x).strip()
+    ])
+    padrao_filtro = c3.selectbox("Padrão Descritivo", padroes_req_opcoes, key="padrao_req_select")
     texto = c4.text_input("Item, detalhe ou categoria")
     somente_disponiveis = st.checkbox("Mostrar apenas itens com quantidade disponível", value=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1567,7 +1608,7 @@ if menu == "Requisições":
         itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str) == sei_filtro]
     if status_contrato != "Todos":
         itens_filtrados = itens_filtrados[itens_filtrados["status"] == status_contrato]
-    if padrao_filtro:
+    if padrao_filtro and padrao_filtro != "Todos":
         itens_filtrados = itens_filtrados[
             itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_filtro, x))
         ]
