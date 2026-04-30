@@ -438,6 +438,7 @@ def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justific
     elementos.append(Paragraph(f"Filtros aplicados: {filtros_texto}", styles["PdfSmall"]))
     if justificativa.strip():
         elementos.append(Paragraph(f"Justificativa: {justificativa}", styles["PdfSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario}", styles["PdfSmall"]))
     elementos.append(Paragraph(f"Emitido em: {agora}", styles["PdfSmall"]))
     elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
 
@@ -1459,7 +1460,7 @@ if menu == "ARPs":
     )
     filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
     padrao_texto = c4.text_input("Padrão Descritivo")
-    justificativa_pdf = st.text_area("Informar código SEI e Justificativa para a Certidão", placeholder="Descreva a finalidade da consulta ou do atesto e informe o código SEI no padrão: 00000.000000/AAAA-00")
+    justificativa_pdf = st.text_area("Justificativa para constar no PDF", placeholder="Descreva a finalidade da consulta ou do atesto.")
     st.markdown('</div>', unsafe_allow_html=True)
 
     contratos_filtrados, itens_filtrados = aplicar_filtros_consulta(
@@ -1484,13 +1485,8 @@ if menu == "ARPs":
     if contratos_filtrados.empty and itens_filtrados.empty:
         texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
 
-    usuario = st.session_state.get("usuario_nome", "Usuário não identificado")
-    pdf_bytes = gerar_pdf_consulta_contratos(
-    contratos_export,
-    resumo_filtros,
-    texto_inexistencia,
-    justificativa_pdf,
-    usuario
+    pdf_bytes = gerar_pdf_consulta_ARPs(
+        contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf
     )
     if st.session_state.logado:
         st.download_button(
@@ -1536,7 +1532,6 @@ if menu == "ARPs":
                             st.write(f"**Detalhes:** {item['detalhes_item']}")
                         with c2:
                             st.write(f"**Quantidade Inicial:** {item['quantidade']}")
-                            st.write(f"**Valor Total Inicial:** {brl(item['valor_total'])}")
 
 # =========================================================
 # REQUISIÇÕES
