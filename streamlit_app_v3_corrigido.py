@@ -1629,7 +1629,7 @@ if menu == "ARPs":
         if str(x).strip()
     ])
     padrao_texto = c4.selectbox("Padrão Descritivo", padroes_opcoes)
-    justificativa_pdf = st.text_area("Justificativa para constar no PDF", placeholder="Descreva a finalidade da consulta ou do atesto.")
+    justificativa_pdf = st.text_area("Referência (Processo SEI)", placeholder="Para tornar esta pesquisa válida, indicar expressamente Processo SEI aberto para adesão à Ata.")
     st.markdown('</div>', unsafe_allow_html=True)
 
     contratos_filtrados, itens_filtrados = aplicar_filtros_consulta(
@@ -1652,7 +1652,7 @@ if menu == "ARPs":
 
     texto_inexistencia = None
     if contratos_filtrados.empty and itens_filtrados.empty:
-        texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
+        texto_inexistencia = "Informo para os deviaos fins que, apôs diligências realzadas nesta Gerência de Atas - SEAD-PIGAB/SLCIGPPCL, NÃO CONSTA no Sistema de Registro de Preços, ATAS VIGENTES E GERENCIADAS PELA PRÓPRIA SEAD-PI. referentes especificamente ao ITEM pesquisado."
 
     if st.session_state.logado:
         usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
