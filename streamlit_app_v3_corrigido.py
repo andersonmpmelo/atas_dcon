@@ -791,8 +791,6 @@ if cursor.fetchone() is None:
     )
     conn.commit()
 
-garantir_permissoes_usuario("AndersonMPMelo", 0)
-
 if "logado" not in st.session_state:
     st.session_state.logado = False
 if "usuario" not in st.session_state:
@@ -935,6 +933,14 @@ def excluir_usuario(username):
     conn.execute("DELETE FROM usuario_modulos WHERE username = ?", (username,))
     conn.execute("DELETE FROM usuarios WHERE username = ?", (username,))
     conn.commit()
+
+
+
+# Garante permissões explícitas para o administrador padrão após a definição das funções.
+try:
+    garantir_permissoes_usuario("AndersonMPMelo", 0)
+except Exception:
+    pass
 
 
 def login_sidebar():
