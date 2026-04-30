@@ -1459,7 +1459,7 @@ if menu == "ARPs":
     )
     filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
     padrao_texto = c4.text_input("Padrão Descritivo")
-    justificativa_pdf = st.text_area("Justificativa para constar no PDF", placeholder="Descreva a finalidade da consulta ou do atesto.")
+    justificativa_pdf = st.text_area("Informar código SEI e Justificativa para a Certidão", placeholder="Descreva a finalidade da consulta ou do atesto e informe o código SEI no padrão: 00000.000000/AAAA-00")
     st.markdown('</div>', unsafe_allow_html=True)
 
     contratos_filtrados, itens_filtrados = aplicar_filtros_consulta(
@@ -1484,8 +1484,13 @@ if menu == "ARPs":
     if contratos_filtrados.empty and itens_filtrados.empty:
         texto_inexistencia = "Atesta-se, para os filtros informados, a inexistência de item ou contrato correspondente nesta base."
 
-    pdf_bytes = gerar_pdf_consulta_ARPs(
-        contratos_export, resumo_filtros, texto_inexistencia, justificativa_pdf
+    usuario = st.session_state.get("usuario_nome", "Usuário não identificado")
+    pdf_bytes = gerar_pdf_consulta_contratos(
+    contratos_export,
+    resumo_filtros,
+    texto_inexistencia,
+    justificativa_pdf,
+    usuario
     )
     if st.session_state.logado:
         st.download_button(
