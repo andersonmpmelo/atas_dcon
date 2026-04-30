@@ -437,7 +437,7 @@ def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justific
                 for item in itens:
                     elementos.append(Paragraph(
                         f"• <b>{item['nome_item']}</b> | Padrão Descritivo: {item['nome_padrao_descritivo']} | "
-                        f"Detalhes: {item['detalhes_item']} | Quantidade Atual: {item['saldo_quantidade']}",
+                        f"Detalhes: {item['detalhes_item']}",
                         styles["PdfItem"]
                     ))
             else:
@@ -790,7 +790,7 @@ def login_sidebar():
                     else:
                         st.error("Usuário ou senha inválidos.")
             else:
-                st.info("Visitantes podem consultar e exportar ARPs e itens.")
+                st.info("Visitantes podem consultar ARPs e itens. Para exportar PDF, faça login.")
                 st.session_state.logado = False
                 st.session_state.usuario = "Visitante"
                 st.session_state.nivel = None
@@ -1430,7 +1430,7 @@ if menu == "ARPs":
     contratos_export = contratos_filtrados.copy()
     contratos_export["itens_exportacao"] = contratos_export["cod_unico"].apply(
         lambda cod: itens_filtrados[itens_filtrados["contrato_cod_unico"] == cod][[
-            "nome_item", "nome_padrao_descritivo", "detalhes_item", "saldo_quantidade"
+            "nome_item", "nome_padrao_descritivo", "detalhes_item"
         ]].to_dict("records")
     )
 
@@ -1485,8 +1485,6 @@ if menu == "ARPs":
                             st.write(f"**Detalhes:** {item['detalhes_item']}")
                         with c2:
                             st.write(f"**Quantidade Inicial:** {item['quantidade']}")
-                            st.write(f"**Quantidade Atual:** {item['saldo_quantidade']}")
-                            st.write(f"**Valor Disponível:** {brl(item['saldo_valor'])}")
 
 # =========================================================
 # REQUISIÇÕES
