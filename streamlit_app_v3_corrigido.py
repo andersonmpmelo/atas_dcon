@@ -901,6 +901,92 @@ def gerar_pdf_historico_itens(itens_selecionados, referencia, usuario):
     buffer.seek(0)
     return buffer.getvalue()
 
+
+
+def gerar_pdf_itens_selecionados(itens_selecionados, filtros_texto, referencia, usuario):
+    """
+    Gera PDF específico com os itens selecionados na emissão.
+    Exibe somente informações institucionais/iniciais:
+    - ARP
+    - SEI
+    - status
+    - item
+    - padrão descritivo
+    - detalhes
+    - quantidade inicial
+    - valor total inicial
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="ItensHeader", fontSize=18, leading=22, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="ItensSmall", fontSize=9, leading=12, textColor=colors.HexColor("#4b5563"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="ItensTitle", fontSize=15, leading=18, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="ItensSection", fontSize=11, leading=14, textColor=colors.HexColor(COR_TEXTO), spaceAfter=5))
+    styles.add(ParagraphStyle(name="ItensBody", fontSize=9, leading=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=3))
+    styles.add(ParagraphStyle(name="ItensItem", fontSize=9, leading=12, leftIndent=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=2))
+
+    elementos = []
+    agora = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+    _pdf_add_logo(elementos, styles)
+    elementos.append(Paragraph("<b>GOVERNO DO ESTADO</b>", styles["ItensHeader"]))
+    elementos.append(Paragraph("Emissão de Consulta de ARPs e Itens Selecionados", styles["ItensTitle"]))
+    elementos.append(Paragraph(f"Referência (Processo SEI): {referencia}", styles["ItensSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario or 'Usuário não identificado'}", styles["ItensSmall"]))
+    elementos.append(Paragraph(f"Filtros utilizados: {filtros_texto}", styles["ItensSmall"]))
+    elementos.append(Paragraph(f"Emitido em: {agora}", styles["ItensSmall"]))
+    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
+
+    if not itens_selecionados:
+        elementos.append(Paragraph("<b>Resultado:</b> Nenhum item selecionado.", styles["ItensBody"]))
+    else:
+        elementos.append(Paragraph(f"<b>Total de itens selecionados:</b> {len(itens_selecionados)}", styles["ItensBody"]))
+        elementos.append(Spacer(1, 0.2 * cm))
+
+        for item in itens_selecionados:
+            quantidade = float(item.get("quantidade", 0) or 0)
+            valor_unitario = float(item.get("valor_unitario", 0) or 0)
+            valor_total = quantidade * valor_unitario
+
+            elementos.append(Paragraph(
+                f"<b>{item.get('numero_sei', '')} | {item.get('titulo', '')}</b> | Status: {item.get('status', '')}",
+                styles["ItensSection"]
+            ))
+            elementos.append(Paragraph(
+                f"Item: <b>{item.get('nome_item', '')}</b> | Código: {item.get('codigo_item', '')}",
+                styles["ItensItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Padrão Descritivo: {item.get('nome_padrao_descritivo', '')}",
+                styles["ItensItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Classe: {item.get('nome_classe', '')} | Categoria: {item.get('nome_categoria', '')}",
+                styles["ItensItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Detalhes: {item.get('detalhes_item', '')}",
+                styles["ItensItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Quantidade Inicial: {quantidade} | Valor Unitário: {brl(valor_unitario)} | Valor Total Inicial: {brl(valor_total)}",
+                styles["ItensItem"]
+            ))
+            elementos.append(Spacer(1, 0.18 * cm))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 # =========================================================
 # ESTILO
 # =========================================================
@@ -2178,40 +2264,196 @@ if menu == "Emissão de PDF":
         st.stop()
 
     st.title("Emissão de PDF")
-    st.caption("Registre consultas realizadas no módulo ARPs e exporte o histórico selecionado em PDF.")
+    st.caption("Pesquise ARPs e itens, selecione os itens desejados, registre a pesquisa no histórico e exporte em PDF.")
 
-    ultima = st.session_state.get("ultima_consulta_arps")
+    contratos_df = carregar_contratos()
+    itens_df = carregar_itens()
+
+    if contratos_df.empty:
+        st.warning("Nenhuma ARP cadastrada.")
+        st.stop()
+
+    st.markdown('<div class="filtro-box">', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns([1.7, 1.7, 1.2, 1.4])
+
+    busca_livre_pdf = c1.text_input(
+        "Busca inteligente",
+        placeholder="Digite item, classe, categoria, detalhe ou palavra-chave",
+        key="pdf_busca_livre"
+    )
+
+    opcoes_busca_pdf = []
+    if not itens_df.empty:
+        labels_pdf = []
+        for _, item_opt in itens_df.iterrows():
+            partes = [
+                str(item_opt.get("nome_item", "")),
+                str(item_opt.get("nome_padrao_descritivo", "")),
+                str(item_opt.get("nome_classe", "")),
+                str(item_opt.get("nome_categoria", "")),
+            ]
+            label = " | ".join([p for p in partes if p and p != "nan"])
+            if label:
+                labels_pdf.append(label)
+        opcoes_busca_pdf = sorted(set(labels_pdf))
+
+    busca_lista_pdf = c2.multiselect(
+        "Selecionar item/classe/categoria",
+        opcoes_busca_pdf,
+        key="pdf_busca_lista"
+    )
+
+    numero_sei_pdf = c3.multiselect(
+        "Número SEI",
+        sorted(contratos_df["numero_sei"].astype(str).unique().tolist()),
+        key="pdf_numero_sei"
+    )
+
+    status_pdf = c4.multiselect(
+        "Status",
+        ["VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"],
+        default=[],
+        key="pdf_status"
+    )
+
+    padroes_pdf_opcoes = sorted([
+        str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
+        if str(x).strip()
+    ])
+    padrao_pdf = st.multiselect(
+        "Padrão Descritivo",
+        padroes_pdf_opcoes,
+        key="pdf_padrao_descritivo"
+    )
+
+    referencia_pdf = st.text_input(
+        "Referência (Processo SEI)",
+        placeholder="00002.004441/2024-46",
+        key="pdf_referencia_unica"
+    )
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    termos_pdf = []
+    if busca_livre_pdf.strip():
+        termos_pdf.append(busca_livre_pdf.strip())
+    if busca_lista_pdf:
+        termos_pdf.extend(busca_lista_pdf)
+
+    busca_pdf_filtro = " ".join(termos_pdf).strip()
+
+    contratos_pdf_filtrados, itens_pdf_filtrados = aplicar_filtros_consulta(
+        contratos_df,
+        itens_df,
+        busca_pdf_filtro,
+        numero_sei_pdf,
+        status_pdf,
+        padrao_pdf
+    )
+
+    resumo_filtros_pdf = (
+        f"Busca: {busca_pdf_filtro or 'Nenhuma'} | "
+        f"Nº SEI: {', '.join(numero_sei_pdf) if numero_sei_pdf else 'Todos'} | "
+        f"Status: {', '.join(status_pdf) if status_pdf else 'Todos'} | "
+        f"Padrão Descritivo: {', '.join(padrao_pdf) if padrao_pdf else 'Todos'}"
+    )
+
+    resultado_pdf = "ENCONTRADO" if (not contratos_pdf_filtrados.empty or not itens_pdf_filtrados.empty) else "NÃO ENCONTRADO"
+
+    st.divider()
+    st.subheader("Resultado da pesquisa")
+
+    c_res1, c_res2, c_res3 = st.columns(3)
+    c_res1.metric("Resultado", resultado_pdf)
+    c_res2.metric("ARPs localizadas", len(contratos_pdf_filtrados))
+    c_res3.metric("Itens localizados", len(itens_pdf_filtrados))
+
+    st.write(f"**Filtros utilizados:** {resumo_filtros_pdf}")
+
+    if itens_pdf_filtrados.empty:
+        st.warning("Nenhum item localizado para os filtros informados.")
+        itens_selecionados_pdf = []
+    else:
+        itens_opcoes = {}
+        for _, item in itens_pdf_filtrados.iterrows():
+            label = (
+                f"SEI {item.get('numero_sei', '')} | "
+                f"{item.get('nome_item', '')} | "
+                f"{item.get('nome_padrao_descritivo', '')} | "
+                f"{item.get('detalhes_item', '')}"
+            )
+            itens_opcoes[label] = item.to_dict()
+
+        labels_selecionados = st.multiselect(
+            "Selecione os itens que deverão constar no PDF",
+            list(itens_opcoes.keys()),
+            default=[]
+        )
+
+        itens_selecionados_pdf = [itens_opcoes[label] for label in labels_selecionados]
+
+        st.markdown("#### Itens localizados")
+        for _, item in itens_pdf_filtrados.iterrows():
+            with st.container(border=True):
+                c_item1, c_item2 = st.columns([1.8, 1])
+                with c_item1:
+                    st.write(f"**Item:** {item.get('nome_item', '')}")
+                    st.write(f"**Padrão Descritivo:** {item.get('nome_padrao_descritivo', '')}")
+                    st.write(f"**Detalhes:** {item.get('detalhes_item', '')}")
+                with c_item2:
+                    qtd_ini = float(item.get("quantidade", 0) or 0)
+                    val_unit = float(item.get("valor_unitario", 0) or 0)
+                    st.write(f"**Nº SEI:** {item.get('numero_sei', '')}")
+                    st.write(f"**Status:** {item.get('status', '')}")
+                    st.write(f"**Quantidade Inicial:** {qtd_ini}")
+                    st.write(f"**Valor Total Inicial:** {brl(qtd_ini * val_unit)}")
+
+    st.divider()
+    st.subheader("Registro e emissão")
+
+    col_reg, col_pdf = st.columns(2)
+
+    if col_reg.button("Registrar pesquisa no histórico", use_container_width=True):
+        registro = montar_registro_consulta_arps(
+            contratos_pdf_filtrados,
+            itens_pdf_filtrados,
+            resumo_filtros_pdf,
+            busca_pdf_filtro
+        )
+        registrar_consulta_no_historico(registro)
+        st.success("Pesquisa registrada no histórico.")
+        st.rerun()
+
+    if not referencia_pdf:
+        st.info("Informe a Referência (Processo SEI) para habilitar a emissão do PDF.")
+    elif not validar_codigo_sei(referencia_pdf):
+        st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+    elif not status_pdf:
+        st.warning("Selecione ao menos um Status para emitir o PDF.")
+    elif not itens_selecionados_pdf:
+        st.warning("Selecione ao menos um item para constar no PDF.")
+    else:
+        pdf_itens = gerar_pdf_itens_selecionados(
+            itens_selecionados_pdf,
+            resumo_filtros_pdf,
+            referencia_pdf.strip(),
+            st.session_state.get("usuario", "Usuário não identificado")
+        )
+        col_pdf.download_button(
+            "Exportar PDF com itens selecionados",
+            data=pdf_itens,
+            file_name=f"itens_selecionados_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+    st.divider()
+    st.subheader("Histórico de pesquisas registradas")
+
     historico_consultas = st.session_state.get("historico_consultas_arps", [])
 
-    section_box_start()
-    st.subheader("Consulta atual")
-
-    if not ultima:
-        st.info("Nenhuma consulta realizada ainda. Acesse o módulo ARPs, aplique os filtros e depois retorne a este módulo.")
-    else:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Resultado", ultima.get("resultado", ""))
-        c2.metric("ARPs localizadas", ultima.get("qtd_arps", 0))
-        c3.metric("Itens localizados", ultima.get("qtd_itens", 0))
-
-        st.write(f"**Busca inteligente:** {ultima.get('busca_inteligente', 'Nenhuma')}")
-        st.write(f"**Filtros utilizados:** {ultima.get('filtros', '')}")
-
-        if st.button("Registrar consulta atual", use_container_width=True):
-            registro = ultima.copy()
-            registro["id"] = uuid.uuid4().hex
-            registro["data_pesquisa"] = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-            registrar_consulta_no_historico(registro)
-            st.success("Consulta registrada no histórico.")
-            st.rerun()
-
-    section_box_end()
-
-    section_box_start()
-    st.subheader("Histórico de consultas registradas")
-
     if not historico_consultas:
-        st.info("Nenhuma consulta registrada no histórico.")
+        st.info("Nenhuma pesquisa registrada no histórico.")
     else:
         hist_df = pd.DataFrame([
             {
@@ -2232,48 +2474,46 @@ if menu == "Emissão de PDF":
             for h in historico_consultas
         }
 
-        selecionados_hist_labels = st.multiselect(
-            "Selecionar consultas para exportar em PDF",
+        consultas_hist_labels = st.multiselect(
+            "Selecionar pesquisas registradas para exportar histórico em PDF",
             list(opcoes_hist.keys()),
             default=[]
         )
 
-        referencia_pdf_unica = st.text_input(
-            "Referência (Processo SEI)",
+        ref_hist = st.text_input(
+            "Referência (Processo SEI) para PDF do histórico",
             placeholder="00002.004441/2024-46",
-            key="referencia_pdf_unica"
+            key="pdf_referencia_historico"
         )
 
-        c_pdf1, c_pdf2 = st.columns(2)
+        c_hist1, c_hist2 = st.columns(2)
 
-        if c_pdf1.button("Limpar histórico registrado", use_container_width=True):
+        if c_hist1.button("Limpar histórico", use_container_width=True):
             st.session_state.historico_consultas_arps = []
             st.success("Histórico limpo.")
             st.rerun()
 
-        consultas_selecionadas = [opcoes_hist[label] for label in selecionados_hist_labels] if selecionados_hist_labels else []
+        consultas_selecionadas_hist = [opcoes_hist[label] for label in consultas_hist_labels] if consultas_hist_labels else []
 
-        if not referencia_pdf_unica:
-            st.info("Informe a Referência (Processo SEI) para habilitar a emissão do PDF.")
-        elif not validar_codigo_sei(referencia_pdf_unica):
+        if not ref_hist:
+            st.info("Informe a Referência (Processo SEI) para exportar o histórico.")
+        elif not validar_codigo_sei(ref_hist):
             st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-        elif not consultas_selecionadas:
-            st.warning("Selecione ao menos uma consulta registrada para exportar.")
+        elif not consultas_selecionadas_hist:
+            st.warning("Selecione ao menos uma pesquisa registrada para exportar.")
         else:
             pdf_hist = gerar_pdf_historico_consultas_arps(
-                consultas_selecionadas,
-                referencia_pdf_unica.strip(),
+                consultas_selecionadas_hist,
+                ref_hist.strip(),
                 st.session_state.get("usuario", "Usuário não identificado")
             )
-            c_pdf2.download_button(
-                "Exportar PDF das consultas selecionadas",
+            c_hist2.download_button(
+                "Exportar PDF do histórico selecionado",
                 data=pdf_hist,
-                file_name=f"consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                file_name=f"historico_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
-
-    section_box_end()
 
 
 # =========================================================
