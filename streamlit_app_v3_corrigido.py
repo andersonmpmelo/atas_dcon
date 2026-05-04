@@ -677,45 +677,147 @@ def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justific
 
 
 
-def registrar_historico_pesquisa_itens(itens_df, filtros):
+def registrar_historico_consulta_arps(contratos_df, itens_df, filtros, busca_inteligente=""):
     """
-    Registra no histórico da sessão os itens localizados na tela ARPs.
-    O histórico é usado para permitir seleção e exportação posterior em PDF.
+    Registra cada consulta realizada no módulo ARPs, com ou sem resultado.
+    O histórico guarda:
+    - data/hora
+    - filtros utilizados
+    - busca inteligente
+    - resultado ENCONTRADO / NÃO ENCONTRADO
+    - quantidade de ARPs e itens localizados
+    - resumo dos itens encontrados
     """
-    if itens_df is None or itens_df.empty:
-        return
+    historico = st.session_state.get("historico_consultas_arps", [])
 
-    historico = st.session_state.get("historico_pesquisa_itens", [])
+    qtd_arps = 0 if contratos_df is None else len(contratos_df)
+    qtd_itens = 0 if itens_df is None else len(itens_df)
+    resultado = "ENCONTRADO" if (qtd_arps > 0 or qtd_itens > 0) else "NÃO ENCONTRADO"
 
-    for _, item in itens_df.iterrows():
-        item_id = str(item.get("id", ""))
-        registro_chave = f"{item_id}|{item.get('numero_sei', '')}|{item.get('codigo_item', '')}"
+    resumo_itens = []
+    if itens_df is not None and not itens_df.empty:
+        for _, item in itens_df.head(50).iterrows():
+            quantidade = float(item.get("quantidade", 0) or 0)
+            valor_unitario = float(item.get("valor_unitario", 0) or 0)
+            resumo_itens.append({
+                "numero_sei": str(item.get("numero_sei", "")),
+                "titulo": str(item.get("titulo", "")),
+                "status": str(item.get("status", "")),
+                "codigo_item": str(item.get("codigo_item", "")),
+                "nome_item": str(item.get("nome_item", "")),
+                "nome_padrao_descritivo": str(item.get("nome_padrao_descritivo", "")),
+                "nome_classe": str(item.get("nome_classe", "")),
+                "nome_categoria": str(item.get("nome_categoria", "")),
+                "detalhes_item": str(item.get("detalhes_item", "")),
+                "quantidade_inicial": quantidade,
+                "valor_unitario": valor_unitario,
+                "valor_total_inicial": quantidade * valor_unitario,
+            })
 
-        if any(h.get("chave") == registro_chave for h in historico):
-            continue
+    registro = {
+        "id": uuid.uuid4().hex,
+        "data_pesquisa": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+        "busca_inteligente": str(busca_inteligente or "Nenhuma"),
+        "filtros": filtros,
+        "resultado": resultado,
+        "qtd_arps": qtd_arps,
+        "qtd_itens": qtd_itens,
+        "itens": resumo_itens,
+    }
 
-        quantidade = float(item.get("quantidade", 0) or 0)
-        valor_unitario = float(item.get("valor_unitario", 0) or 0)
+    # Evita duplicação no rerun quando exatamente a mesma consulta foi registrada há poucos segundos.
+    chave = f"{registro['busca_inteligente']}|{registro['filtros']}|{registro['resultado']}|{registro['qtd_arps']}|{registro['qtd_itens']}"
+    if historico:
+        ultimo = historico[-1]
+        chave_ultimo = f"{ultimo.get('busca_inteligente')}|{ultimo.get('filtros')}|{ultimo.get('resultado')}|{ultimo.get('qtd_arps')}|{ultimo.get('qtd_itens')}"
+        if chave == chave_ultimo:
+            return
 
-        historico.append({
-            "chave": registro_chave,
-            "data_pesquisa": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-            "numero_sei": str(item.get("numero_sei", "")),
-            "titulo": str(item.get("titulo", "")),
-            "status": str(item.get("status", "")),
-            "codigo_item": str(item.get("codigo_item", "")),
-            "nome_item": str(item.get("nome_item", "")),
-            "nome_padrao_descritivo": str(item.get("nome_padrao_descritivo", "")),
-            "nome_classe": str(item.get("nome_classe", "")),
-            "nome_categoria": str(item.get("nome_categoria", "")),
-            "detalhes_item": str(item.get("detalhes_item", "")),
-            "quantidade_inicial": quantidade,
-            "valor_unitario": valor_unitario,
-            "valor_total_inicial": quantidade * valor_unitario,
-            "filtros": filtros,
-        })
+    historico.append(registro)
+    st.session_state.historico_consultas_arps = historico[-200:]
 
-    st.session_state.historico_pesquisa_itens = historico[-300:]
+
+def gerar_pdf_historico_consultas_arps(consultas_selecionadas, referencia, usuario):
+    """
+    Gera PDF com o histórico selecionado de consultas realizadas no módulo ARPs.
+    Inclui filtros, busca inteligente e resultado ENCONTRADO / NÃO ENCONTRADO.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="HistHeader", fontSize=18, leading=22, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="HistSmall", fontSize=9, leading=12, textColor=colors.HexColor("#4b5563"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="HistTitle", fontSize=15, leading=18, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="HistSection", fontSize=11, leading=14, textColor=colors.HexColor(COR_TEXTO), spaceAfter=5))
+    styles.add(ParagraphStyle(name="HistBody", fontSize=9, leading=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=3))
+    styles.add(ParagraphStyle(name="HistItem", fontSize=9, leading=12, leftIndent=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=2))
+
+    elementos = []
+    agora = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+    _pdf_add_logo(elementos, styles)
+    elementos.append(Paragraph("<b>GOVERNO DO ESTADO</b>", styles["HistHeader"]))
+    elementos.append(Paragraph("Histórico de Consultas de ARPs e Itens", styles["HistTitle"]))
+    elementos.append(Paragraph(f"Referência (Processo SEI): {referencia}", styles["HistSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario or 'Usuário não identificado'}", styles["HistSmall"]))
+    elementos.append(Paragraph(f"Emitido em: {agora}", styles["HistSmall"]))
+    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
+
+    if not consultas_selecionadas:
+        elementos.append(Paragraph("<b>Resultado:</b> Nenhuma consulta selecionada.", styles["HistBody"]))
+    else:
+        elementos.append(Paragraph(f"<b>Total de consultas selecionadas:</b> {len(consultas_selecionadas)}", styles["HistBody"]))
+        elementos.append(Spacer(1, 0.2 * cm))
+
+        for consulta in consultas_selecionadas:
+            elementos.append(Paragraph(
+                f"<b>Consulta realizada em:</b> {consulta.get('data_pesquisa', '')} | "
+                f"<b>Resultado:</b> {consulta.get('resultado', '')}",
+                styles["HistSection"]
+            ))
+            elementos.append(Paragraph(f"<b>Busca inteligente:</b> {consulta.get('busca_inteligente', 'Nenhuma')}", styles["HistBody"]))
+            elementos.append(Paragraph(f"<b>Filtros utilizados:</b> {consulta.get('filtros', '')}", styles["HistBody"]))
+            elementos.append(Paragraph(
+                f"<b>ARPs localizadas:</b> {consulta.get('qtd_arps', 0)} | "
+                f"<b>Itens localizados:</b> {consulta.get('qtd_itens', 0)}",
+                styles["HistBody"]
+            ))
+
+            itens = consulta.get("itens", [])
+            if itens:
+                elementos.append(Paragraph("<b>Itens associados à consulta:</b>", styles["HistBody"]))
+                for item in itens:
+                    elementos.append(Paragraph(
+                        f"• <b>{item.get('nome_item', '')}</b> | SEI: {item.get('numero_sei', '')} | "
+                        f"Status: {item.get('status', '')}",
+                        styles["HistItem"]
+                    ))
+                    elementos.append(Paragraph(
+                        f"• Padrão Descritivo: {item.get('nome_padrao_descritivo', '')} | "
+                        f"Classe: {item.get('nome_classe', '')} | Categoria: {item.get('nome_categoria', '')}",
+                        styles["HistItem"]
+                    ))
+                    elementos.append(Paragraph(
+                        f"• Quantidade Inicial: {item.get('quantidade_inicial', 0)} | "
+                        f"Valor Total Inicial: {brl(item.get('valor_total_inicial', 0))}",
+                        styles["HistItem"]
+                    ))
+            else:
+                elementos.append(Paragraph("• Nenhum item localizado nesta consulta.", styles["HistItem"]))
+
+            elementos.append(Spacer(1, 0.18 * cm))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def gerar_pdf_historico_itens(itens_selecionados, referencia, usuario):
@@ -1099,6 +1201,8 @@ if "nivel" not in st.session_state:
     st.session_state.nivel = None
 if "historico_pesquisa_itens" not in st.session_state:
     st.session_state.historico_pesquisa_itens = []
+if "historico_consultas_arps" not in st.session_state:
+    st.session_state.historico_consultas_arps = []
 
 
 # =========================================================
@@ -2012,14 +2116,8 @@ if menu == "ARPs":
 
     if not st.session_state.logado:
         st.info("Faça login para exportar a consulta em PDF.")
-    elif not numero_sei:
-        st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Número SEI.")
-    elif any(not validar_codigo_sei(sei) for sei in numero_sei):
-        st.error("Todos os Números SEI selecionados devem estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
     elif not filtro_status:
         st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Status válido.")
-    elif not padrao_texto:
-        st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Padrão Descritivo.")
     elif not referencia_pdf:
         st.warning("Para exportar o PDF, informe obrigatoriamente a Referência (Processo SEI).")
     elif not validar_codigo_sei(referencia_pdf):
@@ -2042,54 +2140,34 @@ if menu == "ARPs":
         )
 
     st.divider()
-    st.subheader("Histórico de itens pesquisados")
+    st.subheader("Histórico de consultas realizadas")
 
-    historico_itens = st.session_state.get("historico_pesquisa_itens", [])
+    historico_consultas = st.session_state.get("historico_consultas_arps", [])
 
-    if not historico_itens:
-        st.info("Nenhum item pesquisado nesta sessão ainda.")
+    if not historico_consultas:
+        st.info("Nenhuma consulta registrada nesta sessão ainda.")
     else:
-        hist_df = pd.DataFrame(historico_itens)
-        hist_exibir = hist_df[[
-            "data_pesquisa",
-            "numero_sei",
-            "titulo",
-            "status",
-            "nome_item",
-            "nome_padrao_descritivo",
-            "nome_classe",
-            "nome_categoria",
-            "quantidade_inicial",
-            "valor_unitario",
-            "valor_total_inicial",
-        ]].copy()
+        hist_df = pd.DataFrame([
+            {
+                "Data da Pesquisa": h.get("data_pesquisa", ""),
+                "Busca Inteligente": h.get("busca_inteligente", "Nenhuma"),
+                "Filtros Utilizados": h.get("filtros", ""),
+                "Resultado": h.get("resultado", ""),
+                "ARPs Localizadas": h.get("qtd_arps", 0),
+                "Itens Localizados": h.get("qtd_itens", 0),
+            }
+            for h in historico_consultas
+        ])
 
-        hist_exibir.columns = [
-            "Data da Pesquisa",
-            "Número SEI",
-            "ARP",
-            "Status",
-            "Item",
-            "Padrão Descritivo",
-            "Classe",
-            "Categoria",
-            "Quantidade Inicial",
-            "Valor Unitário",
-            "Valor Total Inicial",
-        ]
-
-        hist_exibir["Valor Unitário"] = hist_exibir["Valor Unitário"].apply(brl)
-        hist_exibir["Valor Total Inicial"] = hist_exibir["Valor Total Inicial"].apply(brl)
-
-        st.dataframe(hist_exibir, use_container_width=True, hide_index=True)
+        st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
         opcoes_hist = {
-            f"{h.get('data_pesquisa', '')} | {h.get('numero_sei', '')} | {h.get('nome_item', '')} | {h.get('nome_padrao_descritivo', '')}": h
-            for h in historico_itens
+            f"{h.get('data_pesquisa', '')} | {h.get('resultado', '')} | {h.get('busca_inteligente', 'Nenhuma')} | Itens: {h.get('qtd_itens', 0)}": h
+            for h in historico_consultas
         }
 
         selecionados_hist_labels = st.multiselect(
-            "Selecionar itens do histórico para exportar em PDF",
+            "Selecionar consultas do histórico para exportar em PDF",
             list(opcoes_hist.keys()),
             default=[]
         )
@@ -2103,11 +2181,12 @@ if menu == "ARPs":
         c_hist1, c_hist2 = st.columns(2)
 
         if c_hist1.button("Limpar histórico da sessão", use_container_width=True):
+            st.session_state.historico_consultas_arps = []
             st.session_state.historico_pesquisa_itens = []
             st.success("Histórico limpo.")
             st.rerun()
 
-        itens_hist_selecionados = [opcoes_hist[label] for label in selecionados_hist_labels] if selecionados_hist_labels else []
+        consultas_hist_selecionadas = [opcoes_hist[label] for label in selecionados_hist_labels] if selecionados_hist_labels else []
 
         if not st.session_state.logado:
             st.info("Faça login para exportar o histórico em PDF.")
@@ -2115,18 +2194,18 @@ if menu == "ARPs":
             st.info("Informe a Referência (Processo SEI) para habilitar o PDF do histórico.")
         elif not validar_codigo_sei(referencia_historico):
             st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-        elif not itens_hist_selecionados:
-            st.warning("Selecione ao menos um item do histórico.")
+        elif not consultas_hist_selecionadas:
+            st.warning("Selecione ao menos uma consulta do histórico.")
         else:
-            pdf_hist = gerar_pdf_historico_itens(
-                itens_hist_selecionados,
+            pdf_hist = gerar_pdf_historico_consultas_arps(
+                consultas_hist_selecionadas,
                 referencia_historico.strip(),
                 st.session_state.get("usuario", "Usuário não identificado")
             )
             c_hist2.download_button(
                 "Exportar histórico selecionado em PDF",
                 data=pdf_hist,
-                file_name=f"historico_itens_pesquisados_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                file_name=f"historico_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
