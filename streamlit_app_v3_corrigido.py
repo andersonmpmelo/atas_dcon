@@ -1430,27 +1430,37 @@ def carregar_padroes():
     """, conn)
 
 
-def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei="Todos", filtro_status=None, padrao_texto=""):
+def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei=None, filtro_status=None, padrao_texto=None):
     contratos_filtrados = contratos_df.copy()
     itens_filtrados = itens_df.copy()
 
+    if numero_sei is None:
+        numero_sei = []
     if filtro_status is None:
         filtro_status = []
+    if padrao_texto is None:
+        padrao_texto = []
 
+    if isinstance(numero_sei, str):
+        numero_sei = [] if numero_sei in ["", "Todos"] else [numero_sei]
     if isinstance(filtro_status, str):
         filtro_status = [] if filtro_status in ["", "Todos"] else [filtro_status]
+    if isinstance(padrao_texto, str):
+        padrao_texto = [] if padrao_texto in ["", "Todos"] else [padrao_texto]
 
-    if numero_sei != "Todos":
-        contratos_filtrados = contratos_filtrados[contratos_filtrados["numero_sei"].astype(str) == str(numero_sei)]
-        itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str) == str(numero_sei)]
+    if numero_sei:
+        contratos_filtrados = contratos_filtrados[contratos_filtrados["numero_sei"].astype(str).isin([str(x) for x in numero_sei])]
+        itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str).isin([str(x) for x in numero_sei])]
 
     if filtro_status:
         contratos_filtrados = contratos_filtrados[contratos_filtrados["status"].isin(filtro_status)]
         itens_filtrados = itens_filtrados[itens_filtrados["status"].isin(filtro_status)]
 
-    if padrao_texto and padrao_texto != "Todos":
+    if padrao_texto:
         itens_filtrados = itens_filtrados[
-            itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_texto, x))
+            itens_filtrados["nome_padrao_descritivo"].fillna("").apply(
+                lambda x: any(match_inteligente(p, x) for p in padrao_texto)
+            )
         ]
 
     if busca_geral:
@@ -1931,7 +1941,7 @@ if menu == "ARPs":
         placeholder="Digite item, classe, categoria, detalhe ou palavra-chave"
     )
 
-    opcoes_busca = ["Todos"]
+    opcoes_busca = []
     if not itens_df.empty:
         itens_busca = []
         for _, item_opt in itens_df.iterrows():
@@ -1944,13 +1954,13 @@ if menu == "ARPs":
             label = " | ".join([p for p in partes if p and p != "nan"])
             if label:
                 itens_busca.append(label)
-        opcoes_busca += sorted(set(itens_busca))
+        opcoes_busca = sorted(set(itens_busca))
 
-    busca_lista = c2.selectbox("Selecionar item/classe/categoria", opcoes_busca)
+    busca_lista = c2.multiselect("Selecionar item/classe/categoria", opcoes_busca)
 
-    numero_sei = c3.selectbox(
+    numero_sei = c3.multiselect(
         "Número SEI",
-        ["Todos"] + sorted(contratos_df["numero_sei"].astype(str).unique().tolist())
+        sorted(contratos_df["numero_sei"].astype(str).unique().tolist())
     )
 
     filtro_status = c4.multiselect(
@@ -1959,11 +1969,11 @@ if menu == "ARPs":
         default=[]
     )
 
-    padroes_opcoes = ["Todos"] + sorted([
+    padroes_opcoes = sorted([
         str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
         if str(x).strip()
     ])
-    padrao_texto = st.selectbox("Padrão Descritivo", padroes_opcoes)
+    padrao_texto = st.multiselect("Padrão Descritivo", padroes_opcoes)
 
     justificativa_pdf = st.text_area("Referência (Processo SEI)", placeholder="Para tornar esta pesquisa válida, indicar expressamente Processo SEI aberto para adesão à Ata.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1971,8 +1981,8 @@ if menu == "ARPs":
     termos_busca = []
     if busca_livre.strip():
         termos_busca.append(busca_livre.strip())
-    if busca_lista != "Todos":
-        termos_busca.append(busca_lista)
+    if busca_lista:
+        termos_busca.extend(busca_lista)
 
     busca_geral_filtro = " ".join(termos_busca).strip()
 
@@ -1982,9 +1992,9 @@ if menu == "ARPs":
 
     resumo_filtros = (
         f"Busca: {busca_geral_filtro or 'Nenhuma'} | "
-        f"Nº SEI: {numero_sei} | "
+        f"Nº SEI: {', '.join(numero_sei) if numero_sei else 'Todos'} | "
         f"Status: {', '.join(filtro_status) if filtro_status else 'Todos'} | "
-        f"Padrão Descritivo: {padrao_texto if padrao_texto != 'Todos' else 'Nenhum'}"
+        f"Padrão Descritivo: {', '.join(padrao_texto) if padrao_texto else 'Todos'}"
     )
 
     contratos_export = contratos_filtrados.copy()
@@ -2002,8 +2012,14 @@ if menu == "ARPs":
 
     if not st.session_state.logado:
         st.info("Faça login para exportar a consulta em PDF.")
+    elif not numero_sei:
+        st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Número SEI.")
+    elif any(not validar_codigo_sei(sei) for sei in numero_sei):
+        st.error("Todos os Números SEI selecionados devem estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
     elif not filtro_status:
         st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Status válido.")
+    elif not padrao_texto:
+        st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Padrão Descritivo.")
     elif not referencia_pdf:
         st.warning("Para exportar o PDF, informe obrigatoriamente a Referência (Processo SEI).")
     elif not validar_codigo_sei(referencia_pdf):
@@ -2025,58 +2041,95 @@ if menu == "ARPs":
             use_container_width=True
         )
 
+    st.divider()
+    st.subheader("Histórico de itens pesquisados")
+
     historico_itens = st.session_state.get("historico_pesquisa_itens", [])
-    if st.session_state.logado and historico_itens:
-        with st.expander("Histórico de itens pesquisados para exportação", expanded=False):
-            st.caption("Selecione os itens já pesquisados nesta sessão para gerar um PDF consolidado.")
 
-            opcoes_hist = {
-                f"{h.get('data_pesquisa', '')} | {h.get('numero_sei', '')} | {h.get('nome_item', '')} | {h.get('nome_padrao_descritivo', '')}": h
-                for h in historico_itens
-            }
+    if not historico_itens:
+        st.info("Nenhum item pesquisado nesta sessão ainda.")
+    else:
+        hist_df = pd.DataFrame(historico_itens)
+        hist_exibir = hist_df[[
+            "data_pesquisa",
+            "numero_sei",
+            "titulo",
+            "status",
+            "nome_item",
+            "nome_padrao_descritivo",
+            "nome_classe",
+            "nome_categoria",
+            "quantidade_inicial",
+            "valor_unitario",
+            "valor_total_inicial",
+        ]].copy()
 
-            selecionados_hist_labels = st.multiselect(
-                "Itens do histórico",
-                list(opcoes_hist.keys()),
-                default=list(opcoes_hist.keys())[-min(5, len(opcoes_hist)):]
+        hist_exibir.columns = [
+            "Data da Pesquisa",
+            "Número SEI",
+            "ARP",
+            "Status",
+            "Item",
+            "Padrão Descritivo",
+            "Classe",
+            "Categoria",
+            "Quantidade Inicial",
+            "Valor Unitário",
+            "Valor Total Inicial",
+        ]
+
+        hist_exibir["Valor Unitário"] = hist_exibir["Valor Unitário"].apply(brl)
+        hist_exibir["Valor Total Inicial"] = hist_exibir["Valor Total Inicial"].apply(brl)
+
+        st.dataframe(hist_exibir, use_container_width=True, hide_index=True)
+
+        opcoes_hist = {
+            f"{h.get('data_pesquisa', '')} | {h.get('numero_sei', '')} | {h.get('nome_item', '')} | {h.get('nome_padrao_descritivo', '')}": h
+            for h in historico_itens
+        }
+
+        selecionados_hist_labels = st.multiselect(
+            "Selecionar itens do histórico para exportar em PDF",
+            list(opcoes_hist.keys()),
+            default=[]
+        )
+
+        referencia_historico = st.text_input(
+            "Referência (Processo SEI) para PDF do histórico",
+            placeholder="00002.004441/2024-46",
+            key="referencia_historico_pdf"
+        )
+
+        c_hist1, c_hist2 = st.columns(2)
+
+        if c_hist1.button("Limpar histórico da sessão", use_container_width=True):
+            st.session_state.historico_pesquisa_itens = []
+            st.success("Histórico limpo.")
+            st.rerun()
+
+        itens_hist_selecionados = [opcoes_hist[label] for label in selecionados_hist_labels] if selecionados_hist_labels else []
+
+        if not st.session_state.logado:
+            st.info("Faça login para exportar o histórico em PDF.")
+        elif not referencia_historico:
+            st.info("Informe a Referência (Processo SEI) para habilitar o PDF do histórico.")
+        elif not validar_codigo_sei(referencia_historico):
+            st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+        elif not itens_hist_selecionados:
+            st.warning("Selecione ao menos um item do histórico.")
+        else:
+            pdf_hist = gerar_pdf_historico_itens(
+                itens_hist_selecionados,
+                referencia_historico.strip(),
+                st.session_state.get("usuario", "Usuário não identificado")
             )
-
-            referencia_historico = st.text_input(
-                "Referência (Processo SEI) para PDF do histórico",
-                placeholder="00002.004441/2024-46",
-                key="referencia_historico_pdf"
+            c_hist2.download_button(
+                "Exportar histórico selecionado em PDF",
+                data=pdf_hist,
+                file_name=f"historico_itens_pesquisados_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
             )
-
-            c_hist1, c_hist2 = st.columns(2)
-            if c_hist1.button("Limpar histórico da sessão", use_container_width=True):
-                st.session_state.historico_pesquisa_itens = []
-                st.success("Histórico limpo.")
-                st.rerun()
-
-            if selecionados_hist_labels:
-                itens_hist_selecionados = [opcoes_hist[label] for label in selecionados_hist_labels]
-            else:
-                itens_hist_selecionados = []
-
-            if not referencia_historico:
-                st.info("Informe a Referência (Processo SEI) para habilitar o PDF do histórico.")
-            elif not validar_codigo_sei(referencia_historico):
-                st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-            elif not itens_hist_selecionados:
-                st.warning("Selecione ao menos um item do histórico.")
-            else:
-                pdf_hist = gerar_pdf_historico_itens(
-                    itens_hist_selecionados,
-                    referencia_historico.strip(),
-                    st.session_state.get("usuario", "Usuário não identificado")
-                )
-                c_hist2.download_button(
-                    "Exportar histórico selecionado em PDF",
-                    data=pdf_hist,
-                    file_name=f"historico_itens_pesquisados_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
 
     st.divider()
 
@@ -2135,9 +2188,9 @@ if menu == "Requisições":
 
     st.markdown('<div class="filtro-box">', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
-    sei_filtro = c1.selectbox(
+    sei_filtro = c1.multiselect(
         "Número SEI",
-        ["Todos"] + sorted([x for x in itens_df["numero_sei"].dropna().astype(str).unique().tolist()])
+        sorted([x for x in itens_df["numero_sei"].dropna().astype(str).unique().tolist()])
     )
 
     status_contrato = c2.multiselect(
@@ -2146,11 +2199,11 @@ if menu == "Requisições":
         default=[]
     )
 
-    padroes_req_opcoes = ["Todos"] + sorted([
+    padroes_req_opcoes = sorted([
         str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
         if str(x).strip()
     ])
-    padrao_filtro = c3.selectbox("Padrão Descritivo", padroes_req_opcoes, key="padrao_req_select")
+    padrao_filtro = c3.multiselect("Padrão Descritivo", padroes_req_opcoes, key="padrao_req_select")
 
     opcoes_req_busca = ["Todos"]
     if not itens_df.empty:
@@ -2167,24 +2220,26 @@ if menu == "Requisições":
                 labels_req.append(label)
         opcoes_req_busca += sorted(set(labels_req))
 
-    texto_lista = c4.selectbox("Selecionar item/classe/categoria", opcoes_req_busca, key="req_busca_select")
+    texto_lista = c4.multiselect("Selecionar item/classe/categoria", opcoes_req_busca, key="req_busca_select")
     texto_livre = st.text_input("Busca inteligente em Requisições", placeholder="Digite item, classe, categoria, detalhe ou palavra-chave")
     somente_disponiveis = st.checkbox("Mostrar apenas itens com quantidade disponível", value=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     itens_filtrados = itens_df.copy()
 
-    if sei_filtro != "Todos":
-        itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str) == sei_filtro]
+    if sei_filtro:
+        itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str).isin(sei_filtro)]
     if status_contrato:
         itens_filtrados = itens_filtrados[itens_filtrados["status"].isin(status_contrato)]
-    if padrao_filtro and padrao_filtro != "Todos":
+    if padrao_filtro:
         itens_filtrados = itens_filtrados[
-            itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_filtro, x))
+            itens_filtrados["nome_padrao_descritivo"].fillna("").apply(
+                lambda x: any(match_inteligente(p, x) for p in padrao_filtro)
+            )
         ]
     termos_req = []
-    if texto_lista != "Todos":
-        termos_req.append(texto_lista)
+    if texto_lista:
+        termos_req.extend(texto_lista)
     if texto_livre.strip():
         termos_req.append(texto_livre.strip())
 
