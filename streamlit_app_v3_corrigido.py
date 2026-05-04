@@ -725,14 +725,6 @@ def registrar_historico_consulta_arps(contratos_df, itens_df, filtros, busca_int
         "itens": resumo_itens,
     }
 
-    # Evita duplicação no rerun quando exatamente a mesma consulta foi registrada há poucos segundos.
-    chave = f"{registro['busca_inteligente']}|{registro['filtros']}|{registro['resultado']}|{registro['qtd_arps']}|{registro['qtd_itens']}"
-    if historico:
-        ultimo = historico[-1]
-        chave_ultimo = f"{ultimo.get('busca_inteligente')}|{ultimo.get('filtros')}|{ultimo.get('resultado')}|{ultimo.get('qtd_arps')}|{ultimo.get('qtd_itens')}"
-        if chave == chave_ultimo:
-            return
-
     historico.append(registro)
     st.session_state.historico_consultas_arps = historico[-200:]
 
@@ -2138,6 +2130,26 @@ if menu == "ARPs":
             mime="application/pdf",
             use_container_width=True
         )
+
+    st.divider()
+    st.subheader("Registro da consulta atual")
+
+    resultado_consulta_atual = "ENCONTRADO" if (not contratos_filtrados.empty or not itens_filtrados.empty) else "NÃO ENCONTRADO"
+
+    col_reg1, col_reg2, col_reg3 = st.columns([1, 1, 2])
+    col_reg1.metric("Resultado", resultado_consulta_atual)
+    col_reg2.metric("Itens localizados", len(itens_filtrados))
+    col_reg3.write(f"**Filtros utilizados:** {resumo_filtros}")
+
+    if st.button("Registrar", use_container_width=True):
+        registrar_historico_consulta_arps(
+            contratos_filtrados,
+            itens_filtrados,
+            resumo_filtros,
+            busca_geral_filtro
+        )
+        st.success("Consulta registrada no histórico.")
+        st.rerun()
 
     st.divider()
     st.subheader("Histórico de consultas realizadas")
