@@ -903,6 +903,91 @@ def gerar_pdf_historico_itens(itens_selecionados, referencia, usuario):
 
 
 
+
+def gerar_pdf_emissao_consulta(itens_selecionados, filtros_texto, referencia, usuario, resultado, qtd_arps, qtd_itens):
+    """
+    Gera PDF da emissão da consulta.
+    Pode conter itens selecionados ou apenas o registro do resultado da consulta.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="EmissaoHeader", fontSize=18, leading=22, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="EmissaoSmall", fontSize=9, leading=12, textColor=colors.HexColor("#4b5563"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="EmissaoTitle", fontSize=15, leading=18, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="EmissaoSection", fontSize=11, leading=14, textColor=colors.HexColor(COR_TEXTO), spaceAfter=5))
+    styles.add(ParagraphStyle(name="EmissaoBody", fontSize=9, leading=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=3))
+    styles.add(ParagraphStyle(name="EmissaoItem", fontSize=9, leading=12, leftIndent=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=2))
+
+    elementos = []
+    agora = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+    _pdf_add_logo(elementos, styles)
+    elementos.append(Paragraph("<b>GOVERNO DO ESTADO</b>", styles["EmissaoHeader"]))
+    elementos.append(Paragraph("Emissão de Consulta de ARPs e Itens", styles["EmissaoTitle"]))
+    elementos.append(Paragraph(f"Referência (Processo SEI): {referencia}", styles["EmissaoSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario or 'Usuário não identificado'}", styles["EmissaoSmall"]))
+    elementos.append(Paragraph(f"Filtros utilizados: {filtros_texto}", styles["EmissaoSmall"]))
+    elementos.append(Paragraph(f"Emitido em: {agora}", styles["EmissaoSmall"]))
+    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
+
+    elementos.append(Paragraph(f"<b>Resultado da consulta:</b> {resultado}", styles["EmissaoBody"]))
+    elementos.append(Paragraph(f"<b>ARPs localizadas:</b> {qtd_arps} | <b>Itens localizados:</b> {qtd_itens}", styles["EmissaoBody"]))
+    elementos.append(Spacer(1, 0.2 * cm))
+
+    if not itens_selecionados:
+        elementos.append(Paragraph(
+            "Nenhum item foi selecionado para compor o relatório detalhado. Este PDF registra apenas a consulta realizada, seus filtros e o resultado apurado.",
+            styles["EmissaoBody"]
+        ))
+    else:
+        elementos.append(Paragraph(f"<b>Total de itens selecionados:</b> {len(itens_selecionados)}", styles["EmissaoBody"]))
+        elementos.append(Spacer(1, 0.2 * cm))
+
+        for item in itens_selecionados:
+            quantidade = float(item.get("quantidade", 0) or 0)
+            valor_unitario = float(item.get("valor_unitario", 0) or 0)
+            valor_total = quantidade * valor_unitario
+
+            elementos.append(Paragraph(
+                f"<b>{item.get('numero_sei', '')} | {item.get('titulo', '')}</b> | Status: {item.get('status', '')}",
+                styles["EmissaoSection"]
+            ))
+            elementos.append(Paragraph(
+                f"Item: <b>{item.get('nome_item', '')}</b> | Código: {item.get('codigo_item', '')}",
+                styles["EmissaoItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Padrão Descritivo: {item.get('nome_padrao_descritivo', '')}",
+                styles["EmissaoItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Classe: {item.get('nome_classe', '')} | Categoria: {item.get('nome_categoria', '')}",
+                styles["EmissaoItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Detalhes: {item.get('detalhes_item', '')}",
+                styles["EmissaoItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Quantidade Inicial: {quantidade} | Valor Unitário: {brl(valor_unitario)} | Valor Total Inicial: {brl(valor_total)}",
+                styles["EmissaoItem"]
+            ))
+            elementos.append(Spacer(1, 0.18 * cm))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def gerar_pdf_itens_selecionados(itens_selecionados, filtros_texto, referencia, usuario):
     """
     Gera PDF específico com os itens selecionados na emissão.
@@ -2474,19 +2559,20 @@ if menu == "Emissão de PDF":
         st.info("Informe a Referência (Processo SEI) para habilitar a emissão do PDF.")
     elif not validar_codigo_sei(processo_sei_pdf):
         st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-    elif not itens_selecionados_pdf:
-        st.warning("Selecione ao menos um item para constar no PDF.")
     else:
-        pdf_itens = gerar_pdf_itens_selecionados(
+        pdf_itens = gerar_pdf_emissao_consulta(
             itens_selecionados_pdf,
             resumo_filtros_pdf,
             processo_sei_pdf.strip(),
-            st.session_state.get("usuario", "Usuário não identificado")
+            st.session_state.get("usuario", "Usuário não identificado"),
+            resultado_pdf,
+            len(contratos_pdf_filtrados),
+            len(itens_pdf_filtrados)
         )
         st.download_button(
-            "Exportar PDF com itens selecionados",
+            "Exportar PDF da consulta",
             data=pdf_itens,
-            file_name=f"itens_selecionados_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+            file_name=f"consulta_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
             mime="application/pdf",
             use_container_width=True
         )
