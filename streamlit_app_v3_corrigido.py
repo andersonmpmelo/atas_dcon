@@ -686,25 +686,23 @@ def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justific
 
 
 def registrar_historico_consulta_arps(contratos_df, itens_df, filtros, busca_inteligente=""):
-    """
-    Registra cada consulta realizada no módulo ARPs, com ou sem resultado.
-    O histórico guarda:
-    - data/hora
-    - filtros utilizados
-    - busca inteligente
-    - resultado ENCONTRADO / NÃO ENCONTRADO
-    - quantidade de ARPs e itens localizados
-    - resumo dos itens encontrados
-    """
-    historico = st.session_state.get("historico_consultas_arps", [])
+    registro = montar_registro_consulta_arps(contratos_df, itens_df, filtros, busca_inteligente)
+    registrar_consulta_no_historico(registro)
 
+
+
+
+def montar_registro_consulta_arps(contratos_df, itens_df, filtros, busca_inteligente=""):
+    """
+    Monta o registro estruturado da consulta atual para uso no módulo Emissão de PDF.
+    """
     qtd_arps = 0 if contratos_df is None else len(contratos_df)
     qtd_itens = 0 if itens_df is None else len(itens_df)
     resultado = "ENCONTRADO" if (qtd_arps > 0 or qtd_itens > 0) else "NÃO ENCONTRADO"
 
     resumo_itens = []
     if itens_df is not None and not itens_df.empty:
-        for _, item in itens_df.head(50).iterrows():
+        for _, item in itens_df.head(100).iterrows():
             quantidade = float(item.get("quantidade", 0) or 0)
             valor_unitario = float(item.get("valor_unitario", 0) or 0)
             resumo_itens.append({
@@ -722,7 +720,7 @@ def registrar_historico_consulta_arps(contratos_df, itens_df, filtros, busca_int
                 "valor_total_inicial": quantidade * valor_unitario,
             })
 
-    registro = {
+    return {
         "id": uuid.uuid4().hex,
         "data_pesquisa": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
         "busca_inteligente": str(busca_inteligente or "Nenhuma"),
@@ -733,9 +731,11 @@ def registrar_historico_consulta_arps(contratos_df, itens_df, filtros, busca_int
         "itens": resumo_itens,
     }
 
+
+def registrar_consulta_no_historico(registro):
+    historico = st.session_state.get("historico_consultas_arps", [])
     historico.append(registro)
     st.session_state.historico_consultas_arps = historico[-200:]
-
 
 def gerar_pdf_historico_consultas_arps(consultas_selecionadas, referencia, usuario):
     """
@@ -1203,6 +1203,8 @@ if "historico_pesquisa_itens" not in st.session_state:
     st.session_state.historico_pesquisa_itens = []
 if "historico_consultas_arps" not in st.session_state:
     st.session_state.historico_consultas_arps = []
+if "ultima_consulta_arps" not in st.session_state:
+    st.session_state.ultima_consulta_arps = None
 
 
 # =========================================================
@@ -1239,6 +1241,7 @@ def pode_aprovar():
 MODULOS_SISTEMA = [
     "Dashboard",
     "ARPs",
+    "Emissão de PDF",
     "Requisições",
     "Aprovação de Requisições",
     "Cadastro de ARPs",
@@ -1259,6 +1262,7 @@ def modulos_padrao_por_nivel(nivel):
         return [
             "Dashboard",
             "ARPs",
+            "Emissão de PDF",
             "Requisições",
             "Aprovação de Requisições",
             "Editar ARPs",
@@ -1268,6 +1272,7 @@ def modulos_padrao_por_nivel(nivel):
     if nivel == 2:
         return [
             "ARPs",
+            "Emissão de PDF",
             "Requisições",
             "Cadastro de ARPs",
             "Cadastro de Itens",
@@ -1371,7 +1376,7 @@ def login_sidebar():
                     else:
                         st.error("Usuário ou senha inválidos.")
             else:
-                st.info("Visitantes podem consultar ARPs e itens. Para exportar PDF, faça login.")
+                st.info("Visitantes podem consultar ARPs e aplicar filtros. Para registrar consultas e emitir PDF, faça login.")
                 st.session_state.logado = False
                 st.session_state.usuario = "Visitante"
                 st.session_state.nivel = None
@@ -1867,6 +1872,7 @@ menu_publico = ["ARPs"]
 menu_base_logado = [
     "Dashboard",
     "ARPs",
+    "Emissão de PDF",
     "Requisições",
     "Aprovação de Requisições",
     "Cadastro de ARPs",
@@ -2079,7 +2085,6 @@ if menu == "ARPs":
     ])
     padrao_texto = st.multiselect("Padrão Descritivo", padroes_opcoes)
 
-    justificativa_pdf = st.text_area("Referência (Processo SEI)", placeholder="Para tornar esta pesquisa válida, indicar expressamente Processo SEI aberto para adesão à Ata.")
     st.markdown('</div>', unsafe_allow_html=True)
 
     termos_busca = []
@@ -2112,123 +2117,14 @@ if menu == "ARPs":
     if contratos_filtrados.empty and itens_filtrados.empty:
         texto_inexistencia = "Informo para os deviaos fins que, apôs diligências realzadas nesta Gerência de Atas - SEAD-PIGAB/SLCIGPPCL, NÃO CONSTA no Sistema de Registro de Preços, ATAS VIGENTES E GERENCIADAS PELA PRÓPRIA SEAD-PI. referentes especificamente ao ITEM pesquisado."
    
-    referencia_pdf = str(justificativa_pdf or "").strip()
+    st.session_state.ultima_consulta_arps = montar_registro_consulta_arps(
+        contratos_filtrados,
+        itens_filtrados,
+        resumo_filtros,
+        busca_geral_filtro
+    )
 
-    if not st.session_state.logado:
-        st.info("Faça login para exportar a consulta em PDF.")
-    elif not filtro_status:
-        st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Status válido.")
-    elif not referencia_pdf:
-        st.warning("Para exportar o PDF, informe obrigatoriamente a Referência (Processo SEI).")
-    elif not validar_codigo_sei(referencia_pdf):
-        st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-    else:
-        usuario_pdf = st.session_state.get("usuario", "Usuário não identificado")
-        pdf_bytes = gerar_pdf_consulta_ARPs(
-            contratos_export,
-            resumo_filtros,
-            texto_inexistencia,
-            referencia_pdf,
-            usuario_pdf
-        )
-        st.download_button(
-            "Exportar consulta em PDF",
-            data=pdf_bytes,
-            file_name=f"consulta_arps_itens_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
-
-    st.divider()
-    st.subheader("Registro da consulta atual")
-
-    resultado_consulta_atual = "ENCONTRADO" if (not contratos_filtrados.empty or not itens_filtrados.empty) else "NÃO ENCONTRADO"
-
-    col_reg1, col_reg2, col_reg3 = st.columns([1, 1, 2])
-    col_reg1.metric("Resultado", resultado_consulta_atual)
-    col_reg2.metric("Itens localizados", len(itens_filtrados))
-    col_reg3.write(f"**Filtros utilizados:** {resumo_filtros}")
-
-    if st.button("Registrar", use_container_width=True):
-        registrar_historico_consulta_arps(
-            contratos_filtrados,
-            itens_filtrados,
-            resumo_filtros,
-            busca_geral_filtro
-        )
-        st.success("Consulta registrada no histórico.")
-        st.rerun()
-
-    st.divider()
-    st.subheader("Histórico de consultas realizadas")
-
-    historico_consultas = st.session_state.get("historico_consultas_arps", [])
-
-    if not historico_consultas:
-        st.info("Nenhuma consulta registrada nesta sessão ainda.")
-    else:
-        hist_df = pd.DataFrame([
-            {
-                "Data da Pesquisa": h.get("data_pesquisa", ""),
-                "Busca Inteligente": h.get("busca_inteligente", "Nenhuma"),
-                "Filtros Utilizados": h.get("filtros", ""),
-                "Resultado": h.get("resultado", ""),
-                "ARPs Localizadas": h.get("qtd_arps", 0),
-                "Itens Localizados": h.get("qtd_itens", 0),
-            }
-            for h in historico_consultas
-        ])
-
-        st.dataframe(hist_df, use_container_width=True, hide_index=True)
-
-        opcoes_hist = {
-            f"{h.get('data_pesquisa', '')} | {h.get('resultado', '')} | {h.get('busca_inteligente', 'Nenhuma')} | Itens: {h.get('qtd_itens', 0)}": h
-            for h in historico_consultas
-        }
-
-        selecionados_hist_labels = st.multiselect(
-            "Selecionar consultas do histórico para exportar em PDF",
-            list(opcoes_hist.keys()),
-            default=[]
-        )
-
-        referencia_historico = st.text_input(
-            "Referência (Processo SEI) para PDF do histórico",
-            placeholder="00002.004441/2024-46",
-            key="referencia_historico_pdf"
-        )
-
-        c_hist1, c_hist2 = st.columns(2)
-
-        if c_hist1.button("Limpar histórico da sessão", use_container_width=True):
-            st.session_state.historico_consultas_arps = []
-            st.session_state.historico_pesquisa_itens = []
-            st.success("Histórico limpo.")
-            st.rerun()
-
-        consultas_hist_selecionadas = [opcoes_hist[label] for label in selecionados_hist_labels] if selecionados_hist_labels else []
-
-        if not st.session_state.logado:
-            st.info("Faça login para exportar o histórico em PDF.")
-        elif not referencia_historico:
-            st.info("Informe a Referência (Processo SEI) para habilitar o PDF do histórico.")
-        elif not validar_codigo_sei(referencia_historico):
-            st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
-        elif not consultas_hist_selecionadas:
-            st.warning("Selecione ao menos uma consulta do histórico.")
-        else:
-            pdf_hist = gerar_pdf_historico_consultas_arps(
-                consultas_hist_selecionadas,
-                referencia_historico.strip(),
-                st.session_state.get("usuario", "Usuário não identificado")
-            )
-            c_hist2.download_button(
-                "Exportar histórico selecionado em PDF",
-                data=pdf_hist,
-                file_name=f"historico_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+    st.info("Consulta atualizada. Para registrar e exportar PDF, acesse o módulo 'Emissão de PDF' após login.")
 
     st.divider()
 
@@ -2268,6 +2164,118 @@ if menu == "ARPs":
                             st.write(f"**Quantidade Inicial:** {quantidade_inicial}")
                             st.write(f"**Valor Total Inicial:** {brl(valor_total_inicial)}")
        
+
+# =========================================================
+# EMISSÃO DE PDF
+# =========================================================
+if menu == "Emissão de PDF":
+    if not st.session_state.logado:
+        st.error("Faça login para acessar o módulo de Emissão de PDF.")
+        st.stop()
+
+    if not usuario_tem_modulo(st.session_state.usuario, "Emissão de PDF"):
+        st.error("Você não possui permissão para acessar este módulo.")
+        st.stop()
+
+    st.title("Emissão de PDF")
+    st.caption("Registre consultas realizadas no módulo ARPs e exporte o histórico selecionado em PDF.")
+
+    ultima = st.session_state.get("ultima_consulta_arps")
+    historico_consultas = st.session_state.get("historico_consultas_arps", [])
+
+    section_box_start()
+    st.subheader("Consulta atual")
+
+    if not ultima:
+        st.info("Nenhuma consulta realizada ainda. Acesse o módulo ARPs, aplique os filtros e depois retorne a este módulo.")
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Resultado", ultima.get("resultado", ""))
+        c2.metric("ARPs localizadas", ultima.get("qtd_arps", 0))
+        c3.metric("Itens localizados", ultima.get("qtd_itens", 0))
+
+        st.write(f"**Busca inteligente:** {ultima.get('busca_inteligente', 'Nenhuma')}")
+        st.write(f"**Filtros utilizados:** {ultima.get('filtros', '')}")
+
+        if st.button("Registrar consulta atual", use_container_width=True):
+            registro = ultima.copy()
+            registro["id"] = uuid.uuid4().hex
+            registro["data_pesquisa"] = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+            registrar_consulta_no_historico(registro)
+            st.success("Consulta registrada no histórico.")
+            st.rerun()
+
+    section_box_end()
+
+    section_box_start()
+    st.subheader("Histórico de consultas registradas")
+
+    if not historico_consultas:
+        st.info("Nenhuma consulta registrada no histórico.")
+    else:
+        hist_df = pd.DataFrame([
+            {
+                "Data da Pesquisa": h.get("data_pesquisa", ""),
+                "Busca Inteligente": h.get("busca_inteligente", "Nenhuma"),
+                "Filtros Utilizados": h.get("filtros", ""),
+                "Resultado": h.get("resultado", ""),
+                "ARPs Localizadas": h.get("qtd_arps", 0),
+                "Itens Localizados": h.get("qtd_itens", 0),
+            }
+            for h in historico_consultas
+        ])
+
+        st.dataframe(hist_df, use_container_width=True, hide_index=True)
+
+        opcoes_hist = {
+            f"{h.get('data_pesquisa', '')} | {h.get('resultado', '')} | {h.get('busca_inteligente', 'Nenhuma')} | Itens: {h.get('qtd_itens', 0)}": h
+            for h in historico_consultas
+        }
+
+        selecionados_hist_labels = st.multiselect(
+            "Selecionar consultas para exportar em PDF",
+            list(opcoes_hist.keys()),
+            default=[]
+        )
+
+        referencia_pdf_unica = st.text_input(
+            "Referência (Processo SEI)",
+            placeholder="00002.004441/2024-46",
+            key="referencia_pdf_unica"
+        )
+
+        c_pdf1, c_pdf2 = st.columns(2)
+
+        if c_pdf1.button("Limpar histórico registrado", use_container_width=True):
+            st.session_state.historico_consultas_arps = []
+            st.success("Histórico limpo.")
+            st.rerun()
+
+        consultas_selecionadas = [opcoes_hist[label] for label in selecionados_hist_labels] if selecionados_hist_labels else []
+
+        if not referencia_pdf_unica:
+            st.info("Informe a Referência (Processo SEI) para habilitar a emissão do PDF.")
+        elif not validar_codigo_sei(referencia_pdf_unica):
+            st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+        elif not consultas_selecionadas:
+            st.warning("Selecione ao menos uma consulta registrada para exportar.")
+        else:
+            pdf_hist = gerar_pdf_historico_consultas_arps(
+                consultas_selecionadas,
+                referencia_pdf_unica.strip(),
+                st.session_state.get("usuario", "Usuário não identificado")
+            )
+            c_pdf2.download_button(
+                "Exportar PDF das consultas selecionadas",
+                data=pdf_hist,
+                file_name=f"consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+    section_box_end()
+
+
 # =========================================================
 # REQUISIÇÕES
 # =========================================================
