@@ -675,6 +675,130 @@ def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justific
     return buffer.getvalue()
 
 
+
+
+def registrar_historico_pesquisa_itens(itens_df, filtros):
+    """
+    Registra no histórico da sessão os itens localizados na tela ARPs.
+    O histórico é usado para permitir seleção e exportação posterior em PDF.
+    """
+    if itens_df is None or itens_df.empty:
+        return
+
+    historico = st.session_state.get("historico_pesquisa_itens", [])
+
+    for _, item in itens_df.iterrows():
+        item_id = str(item.get("id", ""))
+        registro_chave = f"{item_id}|{item.get('numero_sei', '')}|{item.get('codigo_item', '')}"
+
+        if any(h.get("chave") == registro_chave for h in historico):
+            continue
+
+        quantidade = float(item.get("quantidade", 0) or 0)
+        valor_unitario = float(item.get("valor_unitario", 0) or 0)
+
+        historico.append({
+            "chave": registro_chave,
+            "data_pesquisa": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+            "numero_sei": str(item.get("numero_sei", "")),
+            "titulo": str(item.get("titulo", "")),
+            "status": str(item.get("status", "")),
+            "codigo_item": str(item.get("codigo_item", "")),
+            "nome_item": str(item.get("nome_item", "")),
+            "nome_padrao_descritivo": str(item.get("nome_padrao_descritivo", "")),
+            "nome_classe": str(item.get("nome_classe", "")),
+            "nome_categoria": str(item.get("nome_categoria", "")),
+            "detalhes_item": str(item.get("detalhes_item", "")),
+            "quantidade_inicial": quantidade,
+            "valor_unitario": valor_unitario,
+            "valor_total_inicial": quantidade * valor_unitario,
+            "filtros": filtros,
+        })
+
+    st.session_state.historico_pesquisa_itens = historico[-300:]
+
+
+def gerar_pdf_historico_itens(itens_selecionados, referencia, usuario):
+    """
+    Gera PDF com histórico selecionado de itens pesquisados.
+    Não expõe Quantidade Atual nem Valor Disponível.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="HistHeader", fontSize=18, leading=22, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="HistSmall", fontSize=9, leading=12, textColor=colors.HexColor("#4b5563"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="HistTitle", fontSize=15, leading=18, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="HistSection", fontSize=11, leading=14, textColor=colors.HexColor(COR_TEXTO), spaceAfter=5))
+    styles.add(ParagraphStyle(name="HistBody", fontSize=9, leading=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=3))
+    styles.add(ParagraphStyle(name="HistItem", fontSize=9, leading=12, leftIndent=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=2))
+
+    elementos = []
+    agora = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+    _pdf_add_logo(elementos, styles)
+    elementos.append(Paragraph("<b>GOVERNO DO ESTADO</b>", styles["HistHeader"]))
+    elementos.append(Paragraph("Histórico Selecionado de Itens Pesquisados", styles["HistTitle"]))
+    elementos.append(Paragraph(f"Referência (Processo SEI): {referencia}", styles["HistSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario or 'Usuário não identificado'}", styles["HistSmall"]))
+    elementos.append(Paragraph(f"Emitido em: {agora}", styles["HistSmall"]))
+    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
+
+    if not itens_selecionados:
+        elementos.append(Paragraph("<b>Resultado:</b> Nenhum item selecionado.", styles["HistBody"]))
+    else:
+        elementos.append(Paragraph(f"<b>Total de itens selecionados:</b> {len(itens_selecionados)}", styles["HistBody"]))
+        elementos.append(Spacer(1, 0.2 * cm))
+
+        for item in itens_selecionados:
+            elementos.append(Paragraph(
+                f"<b>{item.get('numero_sei', '')} | {item.get('titulo', '')}</b> | Status: {item.get('status', '')}",
+                styles["HistSection"]
+            ))
+            elementos.append(Paragraph(
+                f"Pesquisa registrada em: {item.get('data_pesquisa', '')}",
+                styles["HistSmall"]
+            ))
+            elementos.append(Paragraph(
+                f"Filtros utilizados: {item.get('filtros', '')}",
+                styles["HistSmall"]
+            ))
+            elementos.append(Paragraph(
+                f"• <b>{item.get('nome_item', '')}</b> | Código: {item.get('codigo_item', '')}",
+                styles["HistItem"]
+            ))
+            elementos.append(Paragraph(
+                f"• Padrão Descritivo: {item.get('nome_padrao_descritivo', '')}",
+                styles["HistItem"]
+            ))
+            elementos.append(Paragraph(
+                f"• Classe: {item.get('nome_classe', '')} | Categoria: {item.get('nome_categoria', '')}",
+                styles["HistItem"]
+            ))
+            elementos.append(Paragraph(
+                f"• Detalhes: {item.get('detalhes_item', '')}",
+                styles["HistItem"]
+            ))
+            elementos.append(Paragraph(
+                f"• Quantidade Inicial: {item.get('quantidade_inicial', 0)} | "
+                f"Valor Unitário: {brl(item.get('valor_unitario', 0))} | "
+                f"Valor Total Inicial: {brl(item.get('valor_total_inicial', 0))}",
+                styles["HistItem"]
+            ))
+            elementos.append(Spacer(1, 0.18 * cm))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 # =========================================================
 # ESTILO
 # =========================================================
@@ -973,6 +1097,8 @@ if "usuario" not in st.session_state:
     st.session_state.usuario = "Visitante"
 if "nivel" not in st.session_state:
     st.session_state.nivel = None
+if "historico_pesquisa_itens" not in st.session_state:
+    st.session_state.historico_pesquisa_itens = []
 
 
 # =========================================================
@@ -1795,7 +1921,22 @@ if menu == "ARPs":
 
     st.markdown('<div class="filtro-box">', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns([2, 1.2, 1, 1.4])
-    busca_geral = c1.text_input("Buscar contrato, item, detalhe ou categoria")
+    opcoes_busca = ["Todos"]
+    if not itens_df.empty:
+        itens_busca = []
+        for _, item_opt in itens_df.iterrows():
+            partes = [
+                str(item_opt.get("nome_item", "")),
+                str(item_opt.get("nome_padrao_descritivo", "")),
+                str(item_opt.get("nome_classe", "")),
+                str(item_opt.get("nome_categoria", "")),
+                str(item_opt.get("detalhes_item", "")),
+            ]
+            label = " | ".join([p for p in partes[:4] if p and p != "nan"])
+            if label:
+                itens_busca.append(label)
+        opcoes_busca += sorted(set(itens_busca))
+    busca_geral = c1.selectbox("Item / Classe / Categoria", opcoes_busca)
     numero_sei = c2.selectbox(
         "Número SEI",
         ["Todos"] + sorted(contratos_df["numero_sei"].astype(str).unique().tolist())
@@ -1809,12 +1950,13 @@ if menu == "ARPs":
     justificativa_pdf = st.text_area("Referência (Processo SEI)", placeholder="Para tornar esta pesquisa válida, indicar expressamente Processo SEI aberto para adesão à Ata.")
     st.markdown('</div>', unsafe_allow_html=True)
 
+    busca_geral_filtro = "" if busca_geral == "Todos" else busca_geral
     contratos_filtrados, itens_filtrados = aplicar_filtros_consulta(
-        contratos_df, itens_df, busca_geral, numero_sei, filtro_status, padrao_texto
+        contratos_df, itens_df, busca_geral_filtro, numero_sei, filtro_status, padrao_texto
     )
 
     resumo_filtros = (
-        f"Busca: {busca_geral or 'Nenhuma'} | "
+        f"Busca: {busca_geral_filtro or 'Nenhuma'} | "
         f"Nº SEI: {numero_sei} | "
         f"Status: {filtro_status} | "
         f"Padrão Descritivo: {padrao_texto if padrao_texto != 'Todos' else 'Nenhum'}"
@@ -1858,6 +2000,59 @@ if menu == "ARPs":
             use_container_width=True
         )
 
+    historico_itens = st.session_state.get("historico_pesquisa_itens", [])
+    if st.session_state.logado and historico_itens:
+        with st.expander("Histórico de itens pesquisados para exportação", expanded=False):
+            st.caption("Selecione os itens já pesquisados nesta sessão para gerar um PDF consolidado.")
+
+            opcoes_hist = {
+                f"{h.get('data_pesquisa', '')} | {h.get('numero_sei', '')} | {h.get('nome_item', '')} | {h.get('nome_padrao_descritivo', '')}": h
+                for h in historico_itens
+            }
+
+            selecionados_hist_labels = st.multiselect(
+                "Itens do histórico",
+                list(opcoes_hist.keys()),
+                default=list(opcoes_hist.keys())[-min(5, len(opcoes_hist)):]
+            )
+
+            referencia_historico = st.text_input(
+                "Referência (Processo SEI) para PDF do histórico",
+                placeholder="00002.004441/2024-46",
+                key="referencia_historico_pdf"
+            )
+
+            c_hist1, c_hist2 = st.columns(2)
+            if c_hist1.button("Limpar histórico da sessão", use_container_width=True):
+                st.session_state.historico_pesquisa_itens = []
+                st.success("Histórico limpo.")
+                st.rerun()
+
+            if selecionados_hist_labels:
+                itens_hist_selecionados = [opcoes_hist[label] for label in selecionados_hist_labels]
+            else:
+                itens_hist_selecionados = []
+
+            if not referencia_historico:
+                st.info("Informe a Referência (Processo SEI) para habilitar o PDF do histórico.")
+            elif not validar_codigo_sei(referencia_historico):
+                st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+            elif not itens_hist_selecionados:
+                st.warning("Selecione ao menos um item do histórico.")
+            else:
+                pdf_hist = gerar_pdf_historico_itens(
+                    itens_hist_selecionados,
+                    referencia_historico.strip(),
+                    st.session_state.get("usuario", "Usuário não identificado")
+                )
+                c_hist2.download_button(
+                    "Exportar histórico selecionado em PDF",
+                    data=pdf_hist,
+                    file_name=f"historico_itens_pesquisados_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
     st.divider()
 
     if contratos_filtrados.empty and itens_filtrados.empty:
@@ -1890,8 +2085,11 @@ if menu == "ARPs":
                             st.write(f"**Padrão Descritivo:** {item['nome_padrao_descritivo']}")
                             st.write(f"**Detalhes:** {item['detalhes_item']}")
                         with c2:
-                            st.write(f"**Quantidade Inicial:** {item['quantidade']}")
-                            st.write(f"**Valor Total Inicial:** {brl(item['valor_total'])}")
+                            quantidade_inicial = float(item.get("quantidade", 0) or 0)
+                            valor_unitario_inicial = float(item.get("valor_unitario", 0) or 0)
+                            valor_total_inicial = quantidade_inicial * valor_unitario_inicial
+                            st.write(f"**Quantidade Inicial:** {quantidade_inicial}")
+                            st.write(f"**Valor Total Inicial:** {brl(valor_total_inicial)}")
        
 # =========================================================
 # REQUISIÇÕES
@@ -1922,7 +2120,21 @@ if menu == "Requisições":
         if str(x).strip()
     ])
     padrao_filtro = c3.selectbox("Padrão Descritivo", padroes_req_opcoes, key="padrao_req_select")
-    texto = c4.text_input("Item, detalhe ou categoria")
+    opcoes_req_busca = ["Todos"]
+    if not itens_df.empty:
+        labels_req = []
+        for _, item_opt in itens_df.iterrows():
+            partes = [
+                str(item_opt.get("nome_item", "")),
+                str(item_opt.get("nome_padrao_descritivo", "")),
+                str(item_opt.get("nome_classe", "")),
+                str(item_opt.get("nome_categoria", "")),
+            ]
+            label = " | ".join([p for p in partes if p and p != "nan"])
+            if label:
+                labels_req.append(label)
+        opcoes_req_busca += sorted(set(labels_req))
+    texto = c4.selectbox("Item / Classe / Categoria", opcoes_req_busca, key="req_busca_select")
     somente_disponiveis = st.checkbox("Mostrar apenas itens com quantidade disponível", value=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1936,15 +2148,18 @@ if menu == "Requisições":
         itens_filtrados = itens_filtrados[
             itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_filtro, x))
         ]
-    if texto:
+    if texto and texto != "Todos":
         itens_filtrados = itens_filtrados[
             itens_filtrados.apply(
-                lambda row: (
-                    match_inteligente(texto, row["nome_item"]) or
-                    match_inteligente(texto, row["detalhes_item"]) or
-                    match_inteligente(texto, row["nome_padrao_descritivo"]) or
-                    match_inteligente(texto, row["nome_classe"]) or
-                    match_inteligente(texto, row["nome_categoria"])
+                lambda row: match_inteligente(
+                    texto,
+                    " ".join([
+                        str(row.get("nome_item", "")),
+                        str(row.get("detalhes_item", "")),
+                        str(row.get("nome_padrao_descritivo", "")),
+                        str(row.get("nome_classe", "")),
+                        str(row.get("nome_categoria", "")),
+                    ])
                 ),
                 axis=1
             )
