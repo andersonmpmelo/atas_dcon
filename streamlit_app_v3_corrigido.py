@@ -1430,17 +1430,23 @@ def carregar_padroes():
     """, conn)
 
 
-def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei="Todos", filtro_status="Todos", padrao_texto=""):
+def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei="Todos", filtro_status=None, padrao_texto=""):
     contratos_filtrados = contratos_df.copy()
     itens_filtrados = itens_df.copy()
+
+    if filtro_status is None:
+        filtro_status = []
+
+    if isinstance(filtro_status, str):
+        filtro_status = [] if filtro_status in ["", "Todos"] else [filtro_status]
 
     if numero_sei != "Todos":
         contratos_filtrados = contratos_filtrados[contratos_filtrados["numero_sei"].astype(str) == str(numero_sei)]
         itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str) == str(numero_sei)]
 
-    if filtro_status != "Todos":
-        contratos_filtrados = contratos_filtrados[contratos_filtrados["status"] == filtro_status]
-        itens_filtrados = itens_filtrados[itens_filtrados["status"] == filtro_status]
+    if filtro_status:
+        contratos_filtrados = contratos_filtrados[contratos_filtrados["status"].isin(filtro_status)]
+        itens_filtrados = itens_filtrados[itens_filtrados["status"].isin(filtro_status)]
 
     if padrao_texto and padrao_texto != "Todos":
         itens_filtrados = itens_filtrados[
@@ -1484,8 +1490,6 @@ def aplicar_filtros_consulta(contratos_df, itens_df, busca_geral="", numero_sei=
 
         contratos_filtrados = contratos_filtrados[contratos_filtrados["cod_unico"].isin(cods_contrato)]
 
-        # Quando a busca livre encontra item, mostra apenas os itens aderentes.
-        # Quando encontra apenas ARP, mostra todos os itens das ARPs aderentes.
         if not itens_por_texto.empty:
             itens_filtrados = itens_filtrados[itens_filtrados["id"].isin(itens_por_texto["id"].tolist())]
         else:
@@ -1920,7 +1924,13 @@ if menu == "ARPs":
         st.stop()
 
     st.markdown('<div class="filtro-box">', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns([2, 1.2, 1, 1.4])
+    c1, c2, c3, c4 = st.columns([1.7, 1.7, 1.2, 1.4])
+
+    busca_livre = c1.text_input(
+        "Busca inteligente",
+        placeholder="Digite item, classe, categoria, detalhe ou palavra-chave"
+    )
+
     opcoes_busca = ["Todos"]
     if not itens_df.empty:
         itens_busca = []
@@ -1930,27 +1940,42 @@ if menu == "ARPs":
                 str(item_opt.get("nome_padrao_descritivo", "")),
                 str(item_opt.get("nome_classe", "")),
                 str(item_opt.get("nome_categoria", "")),
-                str(item_opt.get("detalhes_item", "")),
             ]
-            label = " | ".join([p for p in partes[:4] if p and p != "nan"])
+            label = " | ".join([p for p in partes if p and p != "nan"])
             if label:
                 itens_busca.append(label)
         opcoes_busca += sorted(set(itens_busca))
-    busca_geral = c1.selectbox("Item / Classe / Categoria", opcoes_busca)
-    numero_sei = c2.selectbox(
+
+    busca_lista = c2.selectbox("Selecionar item/classe/categoria", opcoes_busca)
+
+    numero_sei = c3.selectbox(
         "Número SEI",
         ["Todos"] + sorted(contratos_df["numero_sei"].astype(str).unique().tolist())
     )
-    filtro_status = c3.selectbox("Status", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
+
+    filtro_status = c4.multiselect(
+        "Status",
+        ["VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"],
+        default=[]
+    )
+
     padroes_opcoes = ["Todos"] + sorted([
         str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
         if str(x).strip()
     ])
-    padrao_texto = c4.selectbox("Padrão Descritivo", padroes_opcoes)
+    padrao_texto = st.selectbox("Padrão Descritivo", padroes_opcoes)
+
     justificativa_pdf = st.text_area("Referência (Processo SEI)", placeholder="Para tornar esta pesquisa válida, indicar expressamente Processo SEI aberto para adesão à Ata.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    busca_geral_filtro = "" if busca_geral == "Todos" else busca_geral
+    termos_busca = []
+    if busca_livre.strip():
+        termos_busca.append(busca_livre.strip())
+    if busca_lista != "Todos":
+        termos_busca.append(busca_lista)
+
+    busca_geral_filtro = " ".join(termos_busca).strip()
+
     contratos_filtrados, itens_filtrados = aplicar_filtros_consulta(
         contratos_df, itens_df, busca_geral_filtro, numero_sei, filtro_status, padrao_texto
     )
@@ -1958,7 +1983,7 @@ if menu == "ARPs":
     resumo_filtros = (
         f"Busca: {busca_geral_filtro or 'Nenhuma'} | "
         f"Nº SEI: {numero_sei} | "
-        f"Status: {filtro_status} | "
+        f"Status: {', '.join(filtro_status) if filtro_status else 'Todos'} | "
         f"Padrão Descritivo: {padrao_texto if padrao_texto != 'Todos' else 'Nenhum'}"
     )
 
@@ -1977,8 +2002,8 @@ if menu == "ARPs":
 
     if not st.session_state.logado:
         st.info("Faça login para exportar a consulta em PDF.")
-    elif filtro_status == "Todos":
-        st.warning("Para exportar o PDF, selecione obrigatoriamente um Status válido")
+    elif not filtro_status:
+        st.warning("Para exportar o PDF, selecione obrigatoriamente ao menos um Status válido.")
     elif not referencia_pdf:
         st.warning("Para exportar o PDF, informe obrigatoriamente a Referência (Processo SEI).")
     elif not validar_codigo_sei(referencia_pdf):
@@ -2114,12 +2139,19 @@ if menu == "Requisições":
         "Número SEI",
         ["Todos"] + sorted([x for x in itens_df["numero_sei"].dropna().astype(str).unique().tolist()])
     )
-    status_contrato = c2.selectbox("Status da ARP", ["Todos", "VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"])
+
+    status_contrato = c2.multiselect(
+        "Status da ARP",
+        ["VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"],
+        default=[]
+    )
+
     padroes_req_opcoes = ["Todos"] + sorted([
         str(x) for x in itens_df["nome_padrao_descritivo"].dropna().unique().tolist()
         if str(x).strip()
     ])
     padrao_filtro = c3.selectbox("Padrão Descritivo", padroes_req_opcoes, key="padrao_req_select")
+
     opcoes_req_busca = ["Todos"]
     if not itens_df.empty:
         labels_req = []
@@ -2134,7 +2166,9 @@ if menu == "Requisições":
             if label:
                 labels_req.append(label)
         opcoes_req_busca += sorted(set(labels_req))
-    texto = c4.selectbox("Item / Classe / Categoria", opcoes_req_busca, key="req_busca_select")
+
+    texto_lista = c4.selectbox("Selecionar item/classe/categoria", opcoes_req_busca, key="req_busca_select")
+    texto_livre = st.text_input("Busca inteligente em Requisições", placeholder="Digite item, classe, categoria, detalhe ou palavra-chave")
     somente_disponiveis = st.checkbox("Mostrar apenas itens com quantidade disponível", value=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2142,17 +2176,25 @@ if menu == "Requisições":
 
     if sei_filtro != "Todos":
         itens_filtrados = itens_filtrados[itens_filtrados["numero_sei"].astype(str) == sei_filtro]
-    if status_contrato != "Todos":
-        itens_filtrados = itens_filtrados[itens_filtrados["status"] == status_contrato]
+    if status_contrato:
+        itens_filtrados = itens_filtrados[itens_filtrados["status"].isin(status_contrato)]
     if padrao_filtro and padrao_filtro != "Todos":
         itens_filtrados = itens_filtrados[
             itens_filtrados["nome_padrao_descritivo"].fillna("").apply(lambda x: match_inteligente(padrao_filtro, x))
         ]
-    if texto and texto != "Todos":
+    termos_req = []
+    if texto_lista != "Todos":
+        termos_req.append(texto_lista)
+    if texto_livre.strip():
+        termos_req.append(texto_livre.strip())
+
+    texto_busca_req = " ".join(termos_req).strip()
+
+    if texto_busca_req:
         itens_filtrados = itens_filtrados[
             itens_filtrados.apply(
                 lambda row: match_inteligente(
-                    texto,
+                    texto_busca_req,
                     " ".join([
                         str(row.get("nome_item", "")),
                         str(row.get("detalhes_item", "")),
