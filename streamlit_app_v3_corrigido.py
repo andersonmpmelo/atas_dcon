@@ -2617,8 +2617,9 @@ if menu == "Emissão de PDF":
             st.warning("Não há histórico para exportar.")
         else:
             pdf_historico_total = gerar_pdf_historico_consultas_arps(
-                historico_consultas,
-                st.session_state.get("usuario", "Usuário não identificado")
+            historico_consultas,
+            "N/A",
+            st.session_state.get("usuario", "Usuário não identificado")
             )
             col_hist_pdf.download_button(
                 "Exportar todo o histórico em PDF",
