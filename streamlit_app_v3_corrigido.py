@@ -904,6 +904,116 @@ def gerar_pdf_historico_itens(itens_selecionados, referencia, usuario):
 
 
 
+
+def gerar_pdf_emissao_consolidada(itens_selecionados, historico_consultas, filtros_texto, referencia, usuario, resultado, qtd_arps, qtd_itens):
+    """
+    Gera um único PDF consolidado:
+    - dados formais da consulta atual
+    - itens selecionados, se houver
+    - histórico registrado de pesquisas
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="ConsolHeader", fontSize=18, leading=22, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="ConsolSmall", fontSize=9, leading=12, textColor=colors.HexColor("#4b5563"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="ConsolTitle", fontSize=15, leading=18, textColor=colors.HexColor(COR_AZUL), spaceAfter=8))
+    styles.add(ParagraphStyle(name="ConsolSection", fontSize=11, leading=14, textColor=colors.HexColor(COR_TEXTO), spaceAfter=5))
+    styles.add(ParagraphStyle(name="ConsolBody", fontSize=9, leading=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=3))
+    styles.add(ParagraphStyle(name="ConsolItem", fontSize=9, leading=12, leftIndent=12, textColor=colors.HexColor(COR_TEXTO), spaceAfter=2))
+
+    elementos = []
+    agora = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+    _pdf_add_logo(elementos, styles)
+    elementos.append(Paragraph("<b>GOVERNO DO ESTADO</b>", styles["ConsolHeader"]))
+    elementos.append(Paragraph("Emissão Consolidada de Consulta de ARPs e Itens", styles["ConsolTitle"]))
+    elementos.append(Paragraph(f"Referência (Processo SEI): {referencia}", styles["ConsolSmall"]))
+    elementos.append(Paragraph(f"Usuário responsável pela emissão: {usuario or 'Usuário não identificado'}", styles["ConsolSmall"]))
+    elementos.append(Paragraph(f"Filtros da consulta atual: {filtros_texto}", styles["ConsolSmall"]))
+    elementos.append(Paragraph(f"Emitido em: {agora}", styles["ConsolSmall"]))
+    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(COR_AZUL), spaceBefore=6, spaceAfter=8))
+
+    elementos.append(Paragraph("<b>1. Resultado da consulta atual</b>", styles["ConsolSection"]))
+    elementos.append(Paragraph(f"Resultado: <b>{resultado}</b>", styles["ConsolBody"]))
+    elementos.append(Paragraph(f"ARPs localizadas: {qtd_arps} | Itens localizados: {qtd_itens}", styles["ConsolBody"]))
+    elementos.append(Spacer(1, 0.16 * cm))
+
+    elementos.append(Paragraph("<b>2. Itens selecionados para compor o PDF</b>", styles["ConsolSection"]))
+    if not itens_selecionados:
+        elementos.append(Paragraph("Nenhum item foi selecionado. O PDF registra a consulta atual e o histórico de pesquisas.", styles["ConsolBody"]))
+    else:
+        elementos.append(Paragraph(f"Total de itens selecionados: {len(itens_selecionados)}", styles["ConsolBody"]))
+        for item in itens_selecionados:
+            quantidade = float(item.get("quantidade", 0) or 0)
+            valor_unitario = float(item.get("valor_unitario", 0) or 0)
+            valor_total = quantidade * valor_unitario
+
+            elementos.append(Paragraph(
+                f"<b>{item.get('numero_sei', '')} | {item.get('titulo', '')}</b> | Status: {item.get('status', '')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Item: <b>{item.get('nome_item', '')}</b> | Código: {item.get('codigo_item', '')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Padrão Descritivo: {item.get('nome_padrao_descritivo', '')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Classe: {item.get('nome_classe', '')} | Categoria: {item.get('nome_categoria', '')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Detalhes: {item.get('detalhes_item', '')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Quantidade Inicial: {quantidade} | Valor Unitário: {brl(valor_unitario)} | Valor Total Inicial: {brl(valor_total)}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Spacer(1, 0.12 * cm))
+
+    elementos.append(Spacer(1, 0.18 * cm))
+    elementos.append(Paragraph("<b>3. Histórico de pesquisas registradas</b>", styles["ConsolSection"]))
+
+    if not historico_consultas:
+        elementos.append(Paragraph("Nenhuma pesquisa registrada no histórico.", styles["ConsolBody"]))
+    else:
+        elementos.append(Paragraph(f"Total de pesquisas registradas: {len(historico_consultas)}", styles["ConsolBody"]))
+        for consulta in historico_consultas:
+            elementos.append(Paragraph(
+                f"Consulta em {consulta.get('data_pesquisa', '')} | Resultado: <b>{consulta.get('resultado', '')}</b>",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Busca inteligente: {consulta.get('busca_inteligente', 'Nenhuma')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"Filtros utilizados: {consulta.get('filtros', '')}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Paragraph(
+                f"ARPs localizadas: {consulta.get('qtd_arps', 0)} | Itens localizados: {consulta.get('qtd_itens', 0)}",
+                styles["ConsolItem"]
+            ))
+            elementos.append(Spacer(1, 0.10 * cm))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def gerar_pdf_emissao_consulta(itens_selecionados, filtros_texto, referencia, usuario, resultado, qtd_arps, qtd_itens):
     """
     Gera PDF da emissão da consulta.
@@ -2402,8 +2512,9 @@ if menu == "Emissão de PDF":
     status_pdf = c4.multiselect(
         "Status",
         ["VIGENTE", "PRÓXIMO AO VENCIMENTO", "VENCIDA"],
-        default=[],
-        key="emissao_status"
+        default=["VIGENTE", "PRÓXIMO AO VENCIMENTO"],
+        key="emissao_status",
+        help="Para exportar o PDF, selecione simultaneamente VIGENTE e PRÓXIMO AO VENCIMENTO."
     )
 
     padroes_pdf_opcoes = sorted([
@@ -2555,13 +2666,20 @@ if menu == "Emissão de PDF":
         )
         itens_selecionados_pdf = [itens_opcoes_pdf[label] for label in labels_selecionados]
 
+
+    status_obrigatorios_pdf = {"VIGENTE", "PRÓXIMO AO VENCIMENTO"}
+    status_selecionados_pdf = set(status_pdf)
+
     if not processo_sei_pdf:
         st.info("Informe a Referência (Processo SEI) para habilitar a emissão do PDF.")
     elif not validar_codigo_sei(processo_sei_pdf):
         st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+    elif not status_obrigatorios_pdf.issubset(status_selecionados_pdf):
+        st.warning("Para exportar o PDF, selecione simultaneamente os status VIGENTE e PRÓXIMO AO VENCIMENTO.")
     else:
-        pdf_itens = gerar_pdf_emissao_consulta(
+        pdf_itens = gerar_pdf_emissao_consolidada(
             itens_selecionados_pdf,
+            st.session_state.get("historico_consultas_arps", []),
             resumo_filtros_pdf,
             processo_sei_pdf.strip(),
             st.session_state.get("usuario", "Usuário não identificado"),
@@ -2570,9 +2688,9 @@ if menu == "Emissão de PDF":
             len(itens_pdf_filtrados)
         )
         st.download_button(
-            "Exportar PDF da consulta",
+            "Exportar PDF da consulta consolidada",
             data=pdf_itens,
-            file_name=f"consulta_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+            file_name=f"consulta_consolidada_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
             mime="application/pdf",
             use_container_width=True
         )
@@ -2599,20 +2717,7 @@ if menu == "Emissão de PDF":
 
         st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
-        status_hist_total = st.multiselect(
-            "Status para exportar o histórico",
-            ["VIGENTE", "PRÓXIMO AO VENCIMENTO"],
-            default=[],
-            key="emissao_status_historico_total"
-        )
-
-        historico_filtrado_status = [
-            h for h in historico_consultas
-            if status_hist_total
-            and any(status in str(h.get("filtros", "")) for status in status_hist_total)
-        ]
-
-        col_hist_limpar, col_hist_pdf = st.columns(2)
+        col_hist_limpar, col_hist_info = st.columns(2)
 
         if col_hist_limpar.button("Limpar histórico", use_container_width=True):
             st.session_state.historico_consultas_arps = []
@@ -2620,23 +2725,10 @@ if menu == "Emissão de PDF":
             st.success("Histórico limpo.")
             st.rerun()
 
-        if not status_hist_total:
-            st.warning("Para exportar o histórico, selecione ao menos um Status: VIGENTE ou PRÓXIMO AO VENCIMENTO.")
-        elif not historico_filtrado_status:
-            st.warning("Nenhum registro do histórico corresponde ao(s) status selecionado(s).")
-        else:
-            pdf_historico_total = gerar_pdf_historico_consultas_arps(
-                historico_filtrado_status,
-                "N/A",
-                st.session_state.get("usuario", "Usuário não identificado")
-            )
-            col_hist_pdf.download_button(
-                "Exportar histórico em PDF",
-                data=pdf_historico_total,
-                file_name=f"historico_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+        col_hist_info.info(
+            "A exportação é única: use o botão 'Exportar PDF da consulta consolidada' acima. "
+            "O PDF considera a consulta atual, os itens selecionados quando houver, e o histórico registrado."
+        )
 
 
 # =========================================================
