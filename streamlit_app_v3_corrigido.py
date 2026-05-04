@@ -600,8 +600,16 @@ def excluir_padrao_descritivo(padrao_id):
 # PDF
 # =========================================================
 def _pdf_add_logo(elements, styles):
-    # Compatível com Streamlit Cloud: sem svglib/pycairo.
-    elements.append(Paragraph("<b>Central de Compras</b>", styles["PdfHeader"]))
+    # Compatível com todos os PDFs do sistema.
+    # Alguns relatórios usam PdfHeader, outros usam HistHeader.
+    estilo_header = (
+        styles["PdfHeader"]
+        if "PdfHeader" in styles.byName
+        else styles["HistHeader"]
+        if "HistHeader" in styles.byName
+        else styles["Title"]
+    )
+    elements.append(Paragraph("<b>Central de Compras</b>", estilo_header))
 
 
 def gerar_pdf_consulta_ARPs(df, filtros_texto, texto_inexistencia=None, justificativa="", usuario="Usuário não identificado"):
