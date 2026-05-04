@@ -1,5 +1,7 @@
 import streamlit as st
-import sqlite3
+import os
+import psycopg
+from psycopg.rows import dict_row
 import pandas as pd
 import bcrypt
 from datetime import date, datetime
@@ -17,7 +19,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
-DB_PATH = "arp.db"
 APP_TITLE = "Sistema de Gestão de ARPs, Requisições e Catálogo"
 LOGO_PATH = "/mnt/data/logo-centra-de-compras.svg"
 
@@ -224,19 +225,128 @@ def get_logo_data_uri():
         return ""
 
 
+def _pg_sql(sql):
+    """Traduz SQL estilo SQLite usado no app para PostgreSQL/Neon."""
+    sql = str(sql)
+
+    # DDL SQLite -> PostgreSQL
+    sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    sql = sql.replace("BLOB", "BYTEA")
+    sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql)
+
+    # O status é calculado dinamicamente; sem CHECK para permitir 'PRÓXIMO AO VENCIMENTO'.
+    sql = sql.replace(
+        "status TEXT NOT NULL",
+        "status TEXT NOT NULL"
+    )
+
+    # INSERT OR IGNORE do SQLite -> PostgreSQL
+    sql = re.sub(
+        r"INSERT\s+OR\s+IGNORE\s+INTO\s+(.+?)\s+VALUES\s*\((.*?)\)",
+        r"INSERT INTO \1 VALUES (\2) ON CONFLICT DO NOTHING",
+        sql,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # placeholders SQLite (?) -> PostgreSQL (%s)
+    sql = sql.replace("?", "%s")
+    return sql
+
+
+class PgCursorCompat:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, sql, params=None):
+        self._cursor.execute(_pg_sql(sql), params or None)
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def close(self):
+        self._cursor.close()
+
+
+class PgConnCompat:
+    def __init__(self, raw):
+        self.raw = raw
+
+    def execute(self, sql, params=None):
+        return self.raw.execute(_pg_sql(sql), params or None)
+
+    def cursor(self):
+        return PgCursorCompat(self.raw.cursor())
+
+    def commit(self):
+        try:
+            self.raw.commit()
+        except Exception:
+            pass
+
+    def rollback(self):
+        try:
+            self.raw.rollback()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            self.rollback()
+        else:
+            self.commit()
+        return False
+
+
 def conectado():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    database_url = None
+    try:
+        database_url = st.secrets.get("DATABASE_URL")
+    except Exception:
+        database_url = None
+
+    database_url = database_url or os.environ.get("DATABASE_URL")
+
+    if not database_url:
+        st.error("DATABASE_URL não configurada. Cadastre a variável em Secrets do Streamlit Cloud.")
+        st.stop()
+
+    raw = psycopg.connect(database_url, row_factory=dict_row, autocommit=True)
+    return PgConnCompat(raw)
+
+
+def read_sql(sql, _conn=None, params=None, **kwargs):
+    """Substitui pd.read_sql para operar de forma controlada com psycopg/Neon."""
+    cur = conn.execute(sql, params=params)
+    rows = cur.fetchall()
+    if not rows:
+        cols = [d.name if hasattr(d, "name") else d[0] for d in (cur.description or [])]
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows)
 
 
 def get_columns(conn, table_name):
-    cur = conn.cursor()
-    try:
-        cur.execute(f"PRAGMA table_info({table_name})")
-        return [row[1] for row in cur.fetchall()]
-    except Exception:
-        return []
+    cur = conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+        ORDER BY ordinal_position
+        """,
+        (table_name,)
+    )
+    return [row["column_name"] for row in cur.fetchall()]
 
 
 def ensure_column(conn, table_name, column_name, column_def):
@@ -244,6 +354,29 @@ def ensure_column(conn, table_name, column_name, column_def):
     if column_name not in cols:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
         conn.commit()
+
+
+def remover_checks_antigos_status():
+    """
+    Remove CHECK antigo do campo status, caso exista no Neon.
+    Necessário porque agora existe o status 'PRÓXIMO AO VENCIMENTO'.
+    """
+    try:
+        cur = conn.execute(
+            """
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'contratos'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE %s
+            """,
+            ("%status%",)
+        )
+        for row in cur.fetchall():
+            conn.execute(f"ALTER TABLE contratos DROP CONSTRAINT IF EXISTS {row['conname']}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
 
 def recalc_item_balance(item_id):
@@ -278,7 +411,7 @@ def recalc_item_balance(item_id):
     conn.commit()
 
 def recalc_all_balances():
-    ids = pd.read_sql("SELECT id FROM itens", conn)
+    ids = read_sql("SELECT id FROM itens", conn)
     for _, row in ids.iterrows():
         recalc_item_balance(int(row["id"]))
 
@@ -289,7 +422,7 @@ def excluir_contrato(cod_unico):
     Exclui uma ARP e todos os itens/requisições vinculados.
     Mantém a consistência do banco SQLite.
     """
-    itens_vinculados = pd.read_sql(
+    itens_vinculados = read_sql(
         "SELECT id FROM itens WHERE contrato_cod_unico = ?",
         conn,
         params=(cod_unico,)
@@ -333,7 +466,7 @@ def excluir_catalogo(codigo_item):
     """
     Exclui um item do catálogo e todos os itens/requisições vinculados a ele.
     """
-    itens_vinculados = pd.read_sql(
+    itens_vinculados = read_sql(
         "SELECT id FROM itens WHERE codigo_item = ?",
         conn,
         params=(codigo_item,)
@@ -360,7 +493,7 @@ def excluir_categoria(categoria_id):
     Exclui categoria e todos os vínculos descendentes:
     classes -> padrões -> catálogo -> itens -> requisições.
     """
-    padroes = pd.read_sql("""
+    padroes = read_sql("""
         SELECT pd.id, cat.codigo_item
         FROM classes cl
         LEFT JOIN padroes_descritivos pd ON pd.classe_id = cl.id
@@ -387,7 +520,7 @@ def excluir_classe(classe_id):
     Exclui classe e todos os vínculos descendentes:
     padrões -> catálogo -> itens -> requisições.
     """
-    catalogo_vinculado = pd.read_sql("""
+    catalogo_vinculado = read_sql("""
         SELECT cat.codigo_item
         FROM padroes_descritivos pd
         LEFT JOIN catalogo cat ON cat.padrao_descritivo_id = pd.id
@@ -407,7 +540,7 @@ def excluir_padrao_descritivo(padrao_id):
     Exclui padrão descritivo e todos os vínculos descendentes:
     catálogo -> itens -> requisições.
     """
-    catalogo_vinculado = pd.read_sql("""
+    catalogo_vinculado = read_sql("""
         SELECT codigo_item
         FROM catalogo
         WHERE padrao_descritivo_id = ?
@@ -648,16 +781,16 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS usuarios(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
-    password BLOB NOT NULL,
+    password BYTEA NOT NULL,
     nivel INTEGER NOT NULL CHECK (nivel IN (0, 1, 2))
 )
 """)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS usuario_modulos(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     username TEXT NOT NULL,
     modulo TEXT NOT NULL,
     permitido INTEGER NOT NULL DEFAULT 1,
@@ -667,20 +800,20 @@ CREATE TABLE IF NOT EXISTS usuario_modulos(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS contratos(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     cod_unico TEXT UNIQUE NOT NULL,
     numero_sei TEXT NOT NULL,
     inicio_vigencia TEXT NOT NULL,
     fim_vigencia TEXT NOT NULL,
     titulo TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('VIGENTE', 'VENCIDA')),
+    status TEXT NOT NULL,
     criado_em TEXT DEFAULT CURRENT_TIMESTAMP
 )
 """)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS categorias(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     codigo_categoria TEXT UNIQUE NOT NULL,
     nome_categoria TEXT NOT NULL,
     criado_em TEXT DEFAULT CURRENT_TIMESTAMP
@@ -689,7 +822,7 @@ CREATE TABLE IF NOT EXISTS categorias(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS classes(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     codigo_classe TEXT UNIQUE NOT NULL,
     nome_classe TEXT NOT NULL,
     categoria_id INTEGER NOT NULL,
@@ -700,7 +833,7 @@ CREATE TABLE IF NOT EXISTS classes(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS padroes_descritivos(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     codigo_padrao_descritivo TEXT UNIQUE NOT NULL,
     nome_padrao_descritivo TEXT NOT NULL,
     classe_id INTEGER NOT NULL,
@@ -711,7 +844,7 @@ CREATE TABLE IF NOT EXISTS padroes_descritivos(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS catalogo(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     codigo_item TEXT UNIQUE NOT NULL,
     nome_item TEXT NOT NULL,
     padrao_descritivo_id INTEGER NOT NULL,
@@ -722,7 +855,7 @@ CREATE TABLE IF NOT EXISTS catalogo(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS itens(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     contrato_cod_unico TEXT,
     codigo_item TEXT,
     detalhes_item TEXT,
@@ -737,7 +870,7 @@ CREATE TABLE IF NOT EXISTS itens(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS requisicoes(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     item_id INTEGER NOT NULL,
     contrato_cod_unico TEXT NOT NULL,
     codigo_item TEXT NOT NULL,
@@ -754,6 +887,7 @@ CREATE TABLE IF NOT EXISTS requisicoes(
 """)
 
 conn.commit()
+remover_checks_antigos_status()
 
 cols_itens = get_columns(conn, "itens")
 if "codigo_item" not in cols_itens and "cod_item" in cols_itens:
@@ -873,7 +1007,7 @@ def garantir_permissoes_usuario(username, nivel):
     if not username:
         return
 
-    existentes = pd.read_sql(
+    existentes = read_sql(
         "SELECT modulo FROM usuario_modulos WHERE username = ?",
         conn,
         params=(username,)
@@ -885,7 +1019,7 @@ def garantir_permissoes_usuario(username, nivel):
         if modulo not in existentes_set:
             permitido = 1 if modulo in padrao else 0
             conn.execute(
-                "INSERT OR IGNORE INTO usuario_modulos(username, modulo, permitido) VALUES (?, ?, ?)",
+                "INSERT INTO usuario_modulos(username, modulo, permitido) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
                 (username, modulo, permitido)
             )
     conn.commit()
@@ -955,7 +1089,10 @@ def login_sidebar():
                 if st.button("Entrar", use_container_width=True):
                     cursor.execute("SELECT * FROM usuarios WHERE username = ?", (usuario,))
                     dados = cursor.fetchone()
-                    if dados and bcrypt.checkpw(senha.encode(), dados["password"]):
+                    senha_banco = dados["password"] if dados else None
+                    if isinstance(senha_banco, memoryview):
+                        senha_banco = senha_banco.tobytes()
+                    if dados and bcrypt.checkpw(senha.encode(), senha_banco):
                         st.session_state.logado = True
                         st.session_state.usuario = dados["username"]
                         st.session_state.nivel = dados["nivel"]
@@ -982,7 +1119,7 @@ def login_sidebar():
 # CONSULTAS
 # =========================================================
 def carregar_contratos():
-    df = pd.read_sql("""
+    df = read_sql("""
         SELECT id, cod_unico, numero_sei, inicio_vigencia, fim_vigencia, titulo, status
         FROM contratos
         ORDER BY numero_sei, titulo
@@ -1002,7 +1139,7 @@ def carregar_contratos():
 
 
 def carregar_catalogo():
-    return pd.read_sql("""
+    return read_sql("""
         SELECT
             cat.id,
             cat.codigo_item,
@@ -1064,14 +1201,14 @@ def carregar_itens():
         LEFT JOIN contratos ct ON ct.cod_unico = {contrato_join_ref}
         ORDER BY ct.numero_sei, cat.nome_item, i.id
     """
-    df = pd.read_sql(query, conn)
+    df = read_sql(query, conn)
     if not df.empty:
         df["status"] = df.apply(lambda x: normalizar_status(x["inicio_vigencia"], x["fim_vigencia"]), axis=1)
     return df
 
 
 def carregar_requisicoes():
-    return pd.read_sql("""
+    return read_sql("""
         SELECT
             r.id,
             r.item_id,
@@ -1099,7 +1236,7 @@ def carregar_requisicoes():
 
 
 def carregar_categorias():
-    return pd.read_sql("""
+    return read_sql("""
         SELECT id, codigo_categoria, nome_categoria
         FROM categorias
         ORDER BY codigo_categoria, nome_categoria
@@ -1107,7 +1244,7 @@ def carregar_categorias():
 
 
 def carregar_classes():
-    return pd.read_sql("""
+    return read_sql("""
         SELECT cl.id, cl.codigo_classe, cl.nome_classe, cl.categoria_id,
                cg.codigo_categoria, cg.nome_categoria
         FROM classes cl
@@ -1117,7 +1254,7 @@ def carregar_classes():
 
 
 def carregar_padroes():
-    return pd.read_sql("""
+    return read_sql("""
         SELECT pd.id, pd.codigo_padrao_descritivo, pd.nome_padrao_descritivo, pd.classe_id,
                cl.codigo_classe, cl.nome_classe, cg.codigo_categoria, cg.nome_categoria
         FROM padroes_descritivos pd
@@ -2117,7 +2254,7 @@ if menu == "Cadastro de ARPs":
                     ))
                     conn.commit()
                     st.success("Contrato cadastrado com sucesso.")
-                except sqlite3.IntegrityError:
+                except psycopg.IntegrityError:
                     st.error("Já existe ARP com este COD Único.")
     section_box_end()
 
@@ -2265,7 +2402,7 @@ if menu == "Editar ARPs":
                     conn.commit()
                     st.success("Contrato atualizado com sucesso.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except psycopg.IntegrityError:
                     st.error("Já existe outro ARP com este COD Único.")
     st.warning("A exclusão do contrato removerá também os itens e requisições vinculados.")
     if st.button("Excluir ARP selecionada", type="primary", use_container_width=True):
@@ -2411,7 +2548,7 @@ if menu == "Editar Catálogo":
                 conn.commit()
                 st.success("Catálogo atualizado com sucesso.")
                 st.rerun()
-            except sqlite3.IntegrityError:
+            except psycopg.IntegrityError:
                 st.error("Já existe outro item no catálogo com este código.")
 
     st.warning("A exclusão do item do catálogo removerá também os itens operacionais e requisições vinculados.")
@@ -2452,7 +2589,7 @@ if menu == "Codificação":
                         conn.commit()
                         st.success("Categoria cadastrada com sucesso.")
                         st.rerun()
-                    except sqlite3.IntegrityError:
+                    except psycopg.IntegrityError:
                         st.error("Já existe uma categoria com este código.")
 
         categorias = carregar_categorias()
@@ -2497,7 +2634,7 @@ if menu == "Codificação":
                             conn.commit()
                             st.success("Categoria atualizada com sucesso.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except psycopg.IntegrityError:
                             st.error("Já existe outra categoria com este código.")
 
             st.warning("A exclusão da categoria removerá também classes, padrões, catálogo, itens e requisições vinculadas.")
@@ -2555,7 +2692,7 @@ if menu == "Codificação":
                             conn.commit()
                             st.success("Classe cadastrada com sucesso.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except psycopg.IntegrityError:
                             st.error("Já existe uma classe com este código.")
 
         classes = carregar_classes()
@@ -2609,7 +2746,7 @@ if menu == "Codificação":
                             conn.commit()
                             st.success("Classe atualizada com sucesso.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except psycopg.IntegrityError:
                             st.error("Já existe outra classe com este código.")
 
             st.warning("A exclusão da classe removerá também padrões, catálogo, itens e requisições vinculadas.")
@@ -2667,7 +2804,7 @@ if menu == "Codificação":
                             conn.commit()
                             st.success("Padrão descritivo cadastrado com sucesso.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except psycopg.IntegrityError:
                             st.error("Já existe um padrão descritivo com este código.")
 
         padroes = carregar_padroes()
@@ -2721,7 +2858,7 @@ if menu == "Codificação":
                             conn.commit()
                             st.success("Padrão descritivo atualizado com sucesso.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except psycopg.IntegrityError:
                             st.error("Já existe outro padrão descritivo com este código.")
 
             st.warning("A exclusão do padrão removerá também catálogo, itens e requisições vinculadas.")
@@ -2816,7 +2953,7 @@ if menu == "Codificação":
                             conn.commit()
                             st.success("Item do catálogo cadastrado com sucesso.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except psycopg.IntegrityError:
                             st.error("Já existe um item com este código.")
 
         catalogo = carregar_catalogo()
@@ -2910,11 +3047,11 @@ if menu == "Usuários":
                     garantir_permissoes_usuario(user.strip(), int(nivel))
                     st.success("Usuário criado com sucesso.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except psycopg.IntegrityError:
                     st.error("Já existe um usuário com este nome.")
     section_box_end()
 
-    usuarios = pd.read_sql("SELECT id, username, nivel FROM usuarios ORDER BY nivel, username", conn)
+    usuarios = read_sql("SELECT id, username, nivel FROM usuarios ORDER BY nivel, username", conn)
 
     section_box_start()
     st.subheader("Usuários cadastrados")
@@ -2960,7 +3097,7 @@ if menu == "Usuários":
         st.divider()
         st.markdown("#### Permissões por módulo")
 
-        permissoes_df = pd.read_sql(
+        permissoes_df = read_sql(
             "SELECT modulo, permitido FROM usuario_modulos WHERE username = ?",
             conn,
             params=(usuario_sel["username"],)
