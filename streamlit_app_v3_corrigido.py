@@ -2599,11 +2599,37 @@ if menu == "Emissão de PDF":
 
         st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
-        if st.button("Limpar histórico", use_container_width=True):
+        ref_hist_total = st.text_input(
+            "Referência (Processo SEI) para exportar todo o histórico",
+            placeholder="00002.004441/2024-46",
+            key="emissao_ref_historico_total"
+        )
+
+        col_hist_limpar, col_hist_pdf = st.columns(2)
+
+        if col_hist_limpar.button("Limpar histórico", use_container_width=True):
             st.session_state.historico_consultas_arps = []
             st.session_state.emissao_pdf_ultima_chave = ""
             st.success("Histórico limpo.")
             st.rerun()
+
+        if not ref_hist_total:
+            st.info("Informe a Referência (Processo SEI) para exportar todo o histórico em PDF.")
+        elif not validar_codigo_sei(ref_hist_total):
+            st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+        else:
+            pdf_historico_total = gerar_pdf_historico_consultas_arps(
+                historico_consultas,
+                ref_hist_total.strip(),
+                st.session_state.get("usuario", "Usuário não identificado")
+            )
+            col_hist_pdf.download_button(
+                "Exportar todo o histórico em PDF",
+                data=pdf_historico_total,
+                file_name=f"historico_completo_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
 
 
 # =========================================================
