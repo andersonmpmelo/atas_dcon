@@ -2599,11 +2599,18 @@ if menu == "Emissão de PDF":
 
         st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
-        ref_hist_total = st.text_input(
-            "Referência (Processo SEI) para exportar todo o histórico",
-            placeholder="00002.004441/2024-46",
-            key="emissao_ref_historico_total"
+        status_hist_total = st.multiselect(
+            "Status para exportar o histórico",
+            ["VIGENTE", "PRÓXIMO AO VENCIMENTO"],
+            default=[],
+            key="emissao_status_historico_total"
         )
+
+        historico_filtrado_status = [
+            h for h in historico_consultas
+            if status_hist_total
+            and any(status in str(h.get("filtros", "")) for status in status_hist_total)
+        ]
 
         col_hist_limpar, col_hist_pdf = st.columns(2)
 
@@ -2613,18 +2620,20 @@ if menu == "Emissão de PDF":
             st.success("Histórico limpo.")
             st.rerun()
 
-        if not historico_consultas:
-            st.warning("Não há histórico para exportar.")
+        if not status_hist_total:
+            st.warning("Para exportar o histórico, selecione ao menos um Status: VIGENTE ou PRÓXIMO AO VENCIMENTO.")
+        elif not historico_filtrado_status:
+            st.warning("Nenhum registro do histórico corresponde ao(s) status selecionado(s).")
         else:
             pdf_historico_total = gerar_pdf_historico_consultas_arps(
-            historico_consultas,
-            "N/A",
-            st.session_state.get("usuario", "Usuário não identificado")
+                historico_filtrado_status,
+                "N/A",
+                st.session_state.get("usuario", "Usuário não identificado")
             )
             col_hist_pdf.download_button(
-                "Exportar todo o histórico em PDF",
+                "Exportar histórico em PDF",
                 data=pdf_historico_total,
-                file_name=f"historico_completo_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
+                file_name=f"historico_consultas_arps_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
