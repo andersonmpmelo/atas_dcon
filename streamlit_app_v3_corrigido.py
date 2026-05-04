@@ -2613,14 +2613,11 @@ if menu == "Emissão de PDF":
             st.success("Histórico limpo.")
             st.rerun()
 
-        if not ref_hist_total:
-            st.info("Informe a Referência (Processo SEI) para exportar todo o histórico em PDF.")
-        elif not validar_codigo_sei(ref_hist_total):
-            st.error("A Referência (Processo SEI) deve estar no formato 00000.000000/AAAA-00. Exemplo: 00002.004441/2024-46.")
+        if not historico_consultas:
+            st.warning("Não há histórico para exportar.")
         else:
             pdf_historico_total = gerar_pdf_historico_consultas_arps(
                 historico_consultas,
-                ref_hist_total.strip(),
                 st.session_state.get("usuario", "Usuário não identificado")
             )
             col_hist_pdf.download_button(
