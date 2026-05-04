@@ -45,6 +45,48 @@ def brl(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+
+
+def normalizar_hash_bcrypt(valor):
+    """
+    Normaliza o hash salvo no PostgreSQL/Neon para bytes.
+    Necessário porque BYTEA pode retornar como bytes, memoryview ou str,
+    especialmente quando houve migração entre SQLite/PostgreSQL.
+    """
+    if valor is None:
+        return None
+
+    if isinstance(valor, bytes):
+        return valor
+
+    if isinstance(valor, bytearray):
+        return bytes(valor)
+
+    if isinstance(valor, memoryview):
+        return valor.tobytes()
+
+    if isinstance(valor, str):
+        txt = valor.strip()
+
+        # Caso venha como "\\x..." hexadecimal de BYTEA.
+        if txt.startswith("\\x"):
+            try:
+                return bytes.fromhex(txt[2:])
+            except Exception:
+                return txt.encode("utf-8")
+
+        # Caso venha como "b'$2b$...'"
+        if (txt.startswith("b'") and txt.endswith("'")) or (txt.startswith('b"') and txt.endswith('"')):
+            txt = txt[2:-1]
+
+        return txt.encode("utf-8")
+
+    try:
+        return bytes(valor)
+    except Exception:
+        return str(valor).encode("utf-8")
+
+
 def data_br(data):
     if not data:
         return ""
@@ -918,7 +960,7 @@ conn.commit()
 
 cursor.execute("SELECT id FROM usuarios WHERE username = ?", ("AndersonMPMelo",))
 if cursor.fetchone() is None:
-    senha = bcrypt.hashpw("Tomatinho".encode(), bcrypt.gensalt())
+    senha = bcrypt.hashpw("Tomatinho".encode("utf-8"), bcrypt.gensalt())
     cursor.execute(
         "INSERT INTO usuarios(username, password, nivel) VALUES (?, ?, ?)",
         ("AndersonMPMelo", senha, 0),
@@ -1089,10 +1131,8 @@ def login_sidebar():
                 if st.button("Entrar", use_container_width=True):
                     cursor.execute("SELECT * FROM usuarios WHERE username = ?", (usuario,))
                     dados = cursor.fetchone()
-                    senha_banco = dados["password"] if dados else None
-                    if isinstance(senha_banco, memoryview):
-                        senha_banco = senha_banco.tobytes()
-                    if dados and bcrypt.checkpw(senha.encode(), senha_banco):
+                    senha_banco = normalizar_hash_bcrypt(dados["password"]) if dados else None
+                    if dados and senha_banco and bcrypt.checkpw(senha.encode("utf-8"), senha_banco):
                         st.session_state.logado = True
                         st.session_state.usuario = dados["username"]
                         st.session_state.nivel = dados["nivel"]
@@ -3038,7 +3078,7 @@ if menu == "Usuários":
                 st.warning("Informe usuário e senha.")
             else:
                 try:
-                    senha_hash = bcrypt.hashpw(senha.encode(), bcrypt.gensalt())
+                    senha_hash = bcrypt.hashpw(senha.encode("utf-8"), bcrypt.gensalt())
                     conn.execute(
                         "INSERT INTO usuarios(username, password, nivel) VALUES (?, ?, ?)",
                         (user.strip(), senha_hash, int(nivel))
